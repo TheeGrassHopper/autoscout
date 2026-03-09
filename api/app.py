@@ -1,0 +1,281 @@
+"""
+api/app.py — AutoScout AI REST API
+
+Run with:
+    uvicorn api.app:app --reload --port 8000
+
+Endpoints:
+    GET  /api/stats               → dashboard numbers
+    GET  /api/deals               → all scored listings
+    GET  /api/deals/{id}          → single listing + messages
+    GET  /api/messages/queue      → pending messages to approve
+    POST /api/messages/{id}/approve
+    POST /api/messages/{id}/skip
+    GET  /api/pipeline/status
+    POST /api/pipeline/run
+    GET  /api/pipeline/logs       → SSE log stream
+    GET  /api/config
+"""
+
+import json
+import logging
+import os
+import queue
+import sqlite3
+import sys
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+# ── Path setup (so we can import from the project root) ──────────────────────
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from config import (FILTERS, LOCATION, MESSAGING, NOTIFICATIONS,
+                    OUTPUT, PRICING_SOURCES, SCORING, SOURCES)
+
+# ── App ───────────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="AutoScout AI", version="1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+DB_PATH = OUTPUT.get("db_path", "output/autoscout.db")
+
+# ── Pipeline state ────────────────────────────────────────────────────────────
+
+_pipeline = {
+    "running": False,
+    "last_run": None,
+    "last_count": 0,
+    "logs": queue.Queue(maxsize=500),
+}
+
+# ── DB helpers ────────────────────────────────────────────────────────────────
+
+def _db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def _rows(rows) -> list[dict]:
+    return [dict(r) for r in rows]
+
+def _db_exists() -> bool:
+    return os.path.exists(DB_PATH)
+
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+
+@app.get("/api/stats")
+def get_stats():
+    if not _db_exists():
+        return {"total_listings": 0, "great_deals": 0, "fair_deals": 0,
+                "poor_deals": 0, "messages_queued": 0, "messages_approved": 0}
+
+    with _db() as conn:
+        total   = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
+        great   = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='great'").fetchone()[0]
+        fair    = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='fair'").fetchone()[0]
+        poor    = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='poor'").fetchone()[0]
+        queued  = conn.execute("SELECT COUNT(*) FROM messages WHERE status='queued'").fetchone()[0]
+        approved = conn.execute("SELECT COUNT(*) FROM messages WHERE status='approved'").fetchone()[0]
+
+    return {
+        "total_listings": total,
+        "great_deals": great,
+        "fair_deals": fair,
+        "poor_deals": poor,
+        "messages_queued": queued,
+        "messages_approved": approved,
+    }
+
+
+# ── Deals ─────────────────────────────────────────────────────────────────────
+
+@app.get("/api/deals")
+def get_deals(
+    deal_class: Optional[str] = None,
+    source: Optional[str] = None,
+    limit: int = 200,
+):
+    if not _db_exists():
+        return []
+
+    sql = "SELECT * FROM listings"
+    conditions, params = [], []
+
+    if deal_class:
+        conditions.append("deal_class = ?")
+        params.append(deal_class)
+    if source:
+        conditions.append("source = ?")
+        params.append(source)
+
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY total_score DESC LIMIT ?"
+    params.append(limit)
+
+    with _db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return _rows(rows)
+
+
+@app.get("/api/deals/{listing_id}")
+def get_deal(listing_id: str):
+    if not _db_exists():
+        raise HTTPException(404, "No database yet")
+
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT * FROM listings WHERE listing_id=?", (listing_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Listing not found")
+
+        msgs = conn.execute(
+            "SELECT * FROM messages WHERE listing_id=? ORDER BY drafted_at DESC",
+            (listing_id,)
+        ).fetchall()
+
+    deal = dict(row)
+    deal["messages"] = _rows(msgs)
+    return deal
+
+
+# ── Messages ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/messages/queue")
+def get_message_queue():
+    if not _db_exists():
+        return []
+
+    with _db() as conn:
+        rows = conn.execute("""
+            SELECT m.id, m.listing_id, m.message_text, m.drafted_at, m.status,
+                   l.title, l.url, l.asking_price, l.kbb_value, l.savings,
+                   l.total_score, l.deal_class, l.make, l.model, l.year, l.mileage, l.location
+            FROM messages m
+            JOIN listings l ON m.listing_id = l.listing_id
+            WHERE m.status = 'queued'
+            ORDER BY l.total_score DESC
+        """).fetchall()
+
+    return _rows(rows)
+
+
+@app.post("/api/messages/{message_id}/approve")
+def approve_message(message_id: int):
+    if not _db_exists():
+        raise HTTPException(404, "No database yet")
+    with _db() as conn:
+        conn.execute(
+            "UPDATE messages SET status='approved', sent_at=? WHERE id=?",
+            (datetime.now().isoformat(), message_id),
+        )
+    return {"status": "approved"}
+
+
+@app.post("/api/messages/{message_id}/skip")
+def skip_message(message_id: int):
+    if not _db_exists():
+        raise HTTPException(404, "No database yet")
+    with _db() as conn:
+        conn.execute("UPDATE messages SET status='skipped' WHERE id=?", (message_id,))
+    return {"status": "skipped"}
+
+
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/pipeline/status")
+def pipeline_status():
+    return {
+        "running": _pipeline["running"],
+        "last_run": _pipeline["last_run"],
+        "last_count": _pipeline["last_count"],
+    }
+
+
+@app.post("/api/pipeline/run")
+def run_pipeline_endpoint(
+    background_tasks: BackgroundTasks,
+    query: str = "",
+    dry_run: bool = True,
+):
+    if _pipeline["running"]:
+        raise HTTPException(409, "Pipeline already running")
+    background_tasks.add_task(_run_pipeline_bg, query=query, dry_run=dry_run)
+    return {"status": "started"}
+
+
+def _run_pipeline_bg(query: str = "", dry_run: bool = True):
+    _pipeline["running"] = True
+    _pipeline["last_run"] = datetime.now().isoformat()
+
+    handler = _QueueLogHandler(_pipeline["logs"])
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s — %(message)s", "%H:%M:%S"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+
+    try:
+        from main import run_pipeline
+        results = run_pipeline(query=query, dry_run=dry_run)
+        _pipeline["last_count"] = len(results)
+        _pipeline["logs"].put(f"✅ Pipeline complete — {len(results)} listings processed")
+    except Exception as e:
+        _pipeline["logs"].put(f"❌ Pipeline error: {e}")
+        logging.exception("Pipeline background task failed")
+    finally:
+        root.removeHandler(handler)
+        _pipeline["running"] = False
+
+
+class _QueueLogHandler(logging.Handler):
+    def __init__(self, q: queue.Queue):
+        super().__init__()
+        self.q = q
+
+    def emit(self, record):
+        try:
+            self.q.put_nowait(self.format(record))
+        except queue.Full:
+            pass
+
+
+@app.get("/api/pipeline/logs")
+def stream_logs():
+    """SSE endpoint — browser subscribes and receives live log lines."""
+    def generate():
+        while True:
+            try:
+                line = _pipeline["logs"].get(timeout=25)
+                yield f"data: {json.dumps({'line': line})}\n\n"
+            except queue.Empty:
+                yield f"data: {json.dumps({'ping': True})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/config")
+def get_config():
+    return {
+        "location": LOCATION,
+        "filters": FILTERS,
+        "sources": SOURCES,
+        "pricing_sources": PRICING_SOURCES,
+        "scoring": SCORING,
+        "messaging": MESSAGING,
+    }

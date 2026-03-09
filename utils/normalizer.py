@@ -13,6 +13,8 @@ Claude normalizes all of these into consistent structured fields.
 
 import json
 import logging
+
+import anthropic
 from typing import Optional
 
 import anthropic
@@ -84,28 +86,37 @@ DESCRIPTION: {listing.description[:600]}"""
         logger.debug(f"Normalized: {listing.title[:50]} → {listing.year} {listing.make} {listing.model}")
 
     except (json.JSONDecodeError, KeyError, IndexError) as e:
-        logger.warning(f"Normalization parse error for '{listing.title[:40]}': {e}")
+        logger.debug(f"Normalization parse error for '{listing.title[:40]}': {e}")
+    except anthropic.AuthenticationError:
+        logger.warning("ANTHROPIC_API_KEY is missing or invalid — skipping AI normalization. Add your key to .env to enable it.")
+        raise  # re-raise so normalize_batch can stop trying
     except Exception as e:
-        logger.error(f"Claude API error during normalization: {e}")
+        logger.debug(f"Claude normalization skipped for '{listing.title[:40]}': {e}")
 
     return listing
 
 
 def normalize_batch(listings: list[RawListing], api_key: str, delay: float = 0.3) -> list[RawListing]:
-    """Normalize a list of listings, filtering out any with missing critical fields after."""
+    """Normalize a list of listings. Returns all listings (auth failures skip normalization gracefully)."""
     import time
     normalized = []
+    api_disabled = False  # flip to True on first auth error so we stop spamming
+
     for i, listing in enumerate(listings):
-        logger.info(f"Normalizing {i+1}/{len(listings)}: {listing.title[:60]}")
-        listing = normalize_listing(listing, api_key)
-        time.sleep(delay)
+        if not api_disabled:
+            logger.info(f"Normalizing {i+1}/{len(listings)}: {listing.title[:60]}")
+            try:
+                listing = normalize_listing(listing, api_key)
+                time.sleep(delay)
+            except anthropic.AuthenticationError:
+                api_disabled = True
+                logger.warning("AI normalization disabled for this run — add ANTHROPIC_API_KEY to .env to enable")
 
-        # Skip listings where we couldn't determine essential fields
-        if not listing.make or not listing.year:
-            logger.info(f"  Dropping — could not determine make/year")
-            continue
-
-        normalized.append(listing)
+        # Keep the listing even without normalization — regex parsing still runs
+        if listing.make or listing.year:
+            normalized.append(listing)
+        else:
+            logger.debug(f"  Dropping (no make/year parseable): {listing.title[:50]}")
 
     logger.info(f"Normalization complete: {len(normalized)}/{len(listings)} listings usable")
     return normalized

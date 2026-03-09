@@ -78,15 +78,15 @@ def scrape_facebook(
                     continue
 
                 listing = RawListing(
-                    id=f"fb_{listing_id}",
+                    listing_id=f"fb_{listing_id}",
                     source="facebook",
                     url=item.get("url", f"https://www.facebook.com/marketplace/item/{listing_id}"),
                     title=item.get("title", "").strip(),
-                    asking_price=price,
+                    price=price,
                     location=item.get("location", location),
-                    posted_at=item.get("postedAt", ""),
+                    posted_date=item.get("postedAt", ""),
                     description=item.get("description", "")[:800],
-                    image_url=(item.get("images") or [""])[0],
+                    image_urls=item.get("images") or [],
                     mileage=mileage,
                 )
                 listings.append(listing)

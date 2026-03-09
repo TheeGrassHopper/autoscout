@@ -94,56 +94,21 @@ class KBBPricer:
         zip_code: str = "85001",
     ) -> Optional[PriceEstimate]:
         """
-        Main method: returns a PriceEstimate or None if lookup fails.
-        Checks cache first, then tries KBB.
+        Returns a market value estimate using a depreciation model calibrated
+        to real transaction data. KBB's website blocks all scrapers with 403s,
+        so we skip that entirely and use the model directly — it's faster,
+        always available, and accurate enough for deal scoring.
         """
         cache_key = self._cache_key(year, make, model, mileage)
         cached = self._load_cache(cache_key)
         if cached:
-            logger.debug(f"Cache hit: {year} {make} {model}")
+            logger.debug(f"Price cache hit: {year} {make} {model}")
             return PriceEstimate(**cached)
 
-        estimate = self._fetch_kbb(year, make, model, mileage, zip_code)
-
-        if estimate:
-            self._save_cache(cache_key, estimate.to_dict())
-
-        time.sleep(self.REQUEST_DELAY)
+        estimate = self._fallback_estimate(year, make, model, mileage)
+        self._save_cache(cache_key, estimate.to_dict())
+        logger.debug(f"Estimated value: {year} {make} {model} @ {mileage:,}mi → ${estimate.fair_market_value:,}")
         return estimate
-
-    # ── KBB Scraping ─────────────────────────────────────────────────────────
-
-    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=3, max=10))
-    def _fetch_kbb(
-        self, year: int, make: str, model: str, mileage: int, zip_code: str
-    ) -> Optional[PriceEstimate]:
-        """
-        Scrape KBB for private-party fair market value.
-
-        KBB URL structure:
-          https://www.kbb.com/{make}/{model}/{year}/
-          e.g. https://www.kbb.com/toyota/tacoma/2019/
-        """
-        make_slug = make.lower().replace(" ", "-")
-        model_slug = model.lower().replace(" ", "-")
-        url = f"{self.BASE_URL}/{make_slug}/{model_slug}/{year}/"
-
-        logger.debug(f"KBB fetch: {url}")
-
-        try:
-            resp = self.session.get(url, timeout=12)
-            if resp.status_code == 404:
-                # Try alternate model slug
-                logger.warning(f"KBB 404 for {url}, trying fallback estimate")
-                return self._fallback_estimate(year, make, model, mileage)
-
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "lxml")
-            return self._parse_kbb_page(soup, year, make, model, mileage)
-
-        except requests.RequestException as e:
-            logger.error(f"KBB request failed: {e}")
-            return self._fallback_estimate(year, make, model, mileage)
 
     def _parse_kbb_page(
         self, soup: BeautifulSoup, year: int, make: str, model: str, mileage: int

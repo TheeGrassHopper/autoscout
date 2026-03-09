@@ -55,14 +55,14 @@ SCORING = {
 # ── SOURCES ─────────────────────────────────────────────────────────────────
 SOURCES = {
     "craigslist": True,
-    "facebook_marketplace": False,  # Phase 2 — requires Apify token
+    "facebook_marketplace": True,   # Enabled — APIFY_API_TOKEN set in .env
     "offerup": False,               # Phase 2
 }
 
 PRICING_SOURCES = {
     "kbb": True,
-    "carvana": False,       # Phase 2
-    "carmax": False,        # Phase 2
+    "carvana": True,        # Enabled — scrapes Carvana for comparable prices
+    "carmax": True,         # Enabled — scrapes CarMax for comparable prices
 }
 
 # ── MESSAGING ────────────────────────────────────────────────────────────────

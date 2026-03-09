@@ -47,6 +47,9 @@ class ScoredListing:
     # Pricing
     asking_price: Optional[int] = None
     kbb_value: Optional[int] = None
+    carvana_value: Optional[int] = None
+    carmax_value: Optional[int] = None
+    blended_market_value: Optional[int] = None   # consensus across all sources
     price_source_confidence: str = "low"
     savings_vs_kbb: Optional[int] = None
     savings_pct: Optional[float] = None
@@ -95,6 +98,8 @@ class DealScorer:
         self,
         listing: RawListing,
         price_estimate: Optional[PriceEstimate],
+        carvana_price: Optional[int] = None,
+        carmax_price: Optional[int] = None,
     ) -> ScoredListing:
         """Score a listing and return a ScoredListing."""
 
@@ -113,15 +118,34 @@ class DealScorer:
             description=listing.description,
             image_urls=listing.image_urls,
             asking_price=listing.price,
+            carvana_value=carvana_price,
+            carmax_value=carmax_price,
         )
 
         if price_estimate:
             scored.kbb_value = price_estimate.fair_market_value
             scored.price_source_confidence = price_estimate.confidence
 
-            if scored.asking_price and scored.kbb_value:
-                scored.savings_vs_kbb = scored.kbb_value - scored.asking_price
-                scored.savings_pct = scored.savings_vs_kbb / scored.kbb_value
+        # Blend all available market price sources (weighted avg: KBB 50%, Carvana 30%, CarMax 20%)
+        prices, weights = [], []
+        if scored.kbb_value:
+            prices.append(scored.kbb_value); weights.append(0.50)
+        if carvana_price:
+            prices.append(carvana_price); weights.append(0.30)
+        if carmax_price:
+            prices.append(carmax_price); weights.append(0.20)
+
+        if prices:
+            total_weight = sum(weights)
+            scored.blended_market_value = int(
+                sum(p * w for p, w in zip(prices, weights)) / total_weight
+            )
+
+        # Use blended value for savings calculation (fall back to KBB alone)
+        reference = scored.blended_market_value or scored.kbb_value
+        if scored.asking_price and reference:
+            scored.savings_vs_kbb = reference - scored.asking_price
+            scored.savings_pct = scored.savings_vs_kbb / reference
 
         # Compute sub-scores
         scored.price_score = self._score_price(scored)
@@ -156,9 +180,19 @@ class DealScorer:
             offer_pct = 1.0 - self.config.get("offer_pct_below_asking", 0.08)
             scored.suggested_offer = int(scored.asking_price * offer_pct)
 
+        sources = []
+        if scored.kbb_value:
+            sources.append(f"KBB ${scored.kbb_value:,}")
+        if scored.carvana_value:
+            sources.append(f"Carvana ${scored.carvana_value:,}")
+        if scored.carmax_value:
+            sources.append(f"CarMax ${scored.carmax_value:,}")
+        ask_str = f"${scored.asking_price:,}" if scored.asking_price else "no price"
+        blend_str = f"${scored.blended_market_value:,}" if scored.blended_market_value else "n/a"
         logger.debug(
             f"Scored: {listing.title[:40]} | "
-            f"${scored.asking_price:,} vs KBB ${scored.kbb_value:,} | "
+            f"Ask {ask_str} | {' | '.join(sources) or 'no market data'} | "
+            f"Blended {blend_str} | "
             f"Score {scored.total_score} ({scored.deal_class})"
         )
 
@@ -299,11 +333,12 @@ def print_summary(listings: list[ScoredListing]):
             else:
                 savings_str = f"  ▲ ${abs(l.savings_vs_kbb):,} above KBB"
 
+        ask = f"${l.asking_price:,}" if l.asking_price else "no price"
+        kbb = f"KBB ~${l.kbb_value:,}" if l.kbb_value else "no KBB"
+        mi = f"{l.mileage:,} mi" if l.mileage else "? mi"
         print(f"\n{icon} [{l.total_score:>3}/100]  {l.title}")
-        print(f"   ${l.asking_price:,} asking"
-              f"  |  KBB ~${l.kbb_value:,}"
-              f"{savings_str}")
-        print(f"   {l.mileage:,} mi  |  {l.location}  |  {l.source}")
+        print(f"   {ask} asking  |  {kbb}{savings_str}")
+        print(f"   {mi}  |  {l.location}  |  {l.source}")
         print(f"   {l.url}")
 
     print("\n" + "═" * 70 + "\n")

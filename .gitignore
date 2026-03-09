@@ -1,3 +1,13 @@
+# Secrets — never commit
+.env
+output/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+web/node_modules/
+web/.next/
+
 # Build and Release Folders
 bin-debug/
 bin-release/

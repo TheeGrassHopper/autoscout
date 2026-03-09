@@ -3,10 +3,11 @@
 main.py — AutoScout AI Pipeline Entry Point
 
 Runs the full vehicle deal hunting pipeline:
-  1. Scrape Craigslist for listings matching your config
-  2. Look up KBB market values for each listing
-  3. Score each listing (0–100 deal score)
-  4. Draft seller messages for good deals
+  1. Scrape Craigslist + Facebook Marketplace for listings
+  1.5 AI-normalize listings (make/model/year/mileage extraction via Claude)
+  2. Look up market values: KBB + Carvana + CarMax
+  3. Score each listing (0–100 deal score, blended across all price sources)
+  4. Draft seller messages for good deals (Claude or template)
   5. Export results to CSV + SQLite
   6. Print a summary + queue messages for review
 
@@ -14,7 +15,7 @@ Usage:
     python main.py
     python main.py --dry-run          # Scrape + score, skip messaging
     python main.py --query "tacoma"   # Search a specific vehicle
-    python main.py --once             # Run once (vs. scheduled mode)
+    python main.py --schedule         # Run on a schedule
 """
 
 import argparse
@@ -24,13 +25,13 @@ import os
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
 from dotenv import load_dotenv
 
 # ── Load environment variables ───────────────────────────────────────────────
 load_dotenv()
 
 # ── Logging setup ────────────────────────────────────────────────────────────
+os.makedirs("output", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-7s  %(name)s — %(message)s",
@@ -48,7 +49,10 @@ from config import (
     SCORING, SOURCES, PRICING_SOURCES, MESSAGING, NOTIFICATIONS, OUTPUT
 )
 from scrapers.craigslist import CraigslistScraper
+from scrapers.facebook import scrape_facebook
 from pricing.kbb import KBBPricer
+from pricing.carvana import get_carvana_price
+from pricing.carmax import get_carmax_price
 from scoring.engine import DealScorer, ScoredListing, sort_listings, print_summary
 from messaging.drafter import MessageDrafter
 from messaging.sender import MessageSender
@@ -64,7 +68,6 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
     Returns a list of scored listings.
     """
     start = time.time()
-    os.makedirs("output", exist_ok=True)
     os.makedirs("output/.price_cache", exist_ok=True)
 
     logger.info("=" * 60)
@@ -78,16 +81,38 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
     logger.info("STEP 1 — Scraping listings")
 
     all_raw = []
+    seen_ids: set[str] = set()
 
+    # Craigslist
     if SOURCES.get("craigslist"):
         scraper = CraigslistScraper(
             city=LOCATION["city"],
             config=FILTERS,
             vehicle_types=VEHICLE_TYPES,
         )
-        raw_listings = scraper.scrape(query=query)
-        all_raw.extend(raw_listings)
-        logger.info(f"Craigslist: {len(raw_listings)} listings after filtering")
+        cl_listings = scraper.scrape(query=query)
+        for l in cl_listings:
+            if l.listing_id not in seen_ids:
+                seen_ids.add(l.listing_id)
+                all_raw.append(l)
+        logger.info(f"Craigslist: {len(cl_listings)} listings after filtering")
+
+    # Facebook Marketplace (requires APIFY_API_TOKEN)
+    if SOURCES.get("facebook_marketplace"):
+        apify_token = os.getenv("APIFY_API_TOKEN", "")
+        keywords = [query] if query else (SEARCH_QUERIES or ["used car"])
+        fb_listings = scrape_facebook(
+            location=LOCATION["city"],
+            keywords=[k for k in keywords if k],
+            min_price=FILTERS["min_price"],
+            max_price=FILTERS["max_price"],
+            max_mileage=FILTERS["max_mileage"],
+            radius_miles=LOCATION["search_radius_miles"],
+            apify_token=apify_token,
+            seen_ids=seen_ids,
+        )
+        all_raw.extend(fb_listings)
+        logger.info(f"Facebook Marketplace: {len(fb_listings)} new listings")
 
     if not all_raw:
         logger.warning("No listings found. Check your filters or try a broader search.")
@@ -95,10 +120,21 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
 
     logger.info(f"Total raw listings: {len(all_raw)}")
 
+    # ── Step 1.5: AI normalization (fills in missing make/model/year) ─────────
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if anthropic_key:
+        logger.info("STEP 1.5 — AI normalizing listings (Claude)")
+        from utils.normalizer import normalize_batch
+        all_raw = normalize_batch(all_raw, api_key=anthropic_key)
+    else:
+        logger.info("STEP 1.5 — Skipping AI normalization (no ANTHROPIC_API_KEY)")
+
     # ── Step 2: Price lookups ─────────────────────────────────────────────────
-    logger.info("STEP 2 — Fetching market values (KBB)")
+    logger.info("STEP 2 — Fetching market values (KBB + Carvana + CarMax)")
 
     pricer = KBBPricer() if PRICING_SOURCES.get("kbb") else None
+    use_carvana = PRICING_SOURCES.get("carvana", False)
+    use_carmax = PRICING_SOURCES.get("carmax", False)
 
     # ── Step 3: Score listings ────────────────────────────────────────────────
     logger.info("STEP 3 — Scoring listings")
@@ -110,7 +146,7 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
     for i, raw in enumerate(all_raw, 1):
         logger.info(f"  [{i}/{len(all_raw)}] {raw.title[:50]}")
 
-        # Price lookup
+        # KBB lookup
         price_est = None
         if pricer and raw.make and raw.model and raw.year:
             price_est = pricer.get_price(
@@ -121,11 +157,49 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
                 zip_code=LOCATION.get("zip_code", "85001"),
             )
         elif pricer:
-            # We have a pricer but couldn't parse make/model — use fallback
-            logger.debug(f"  Skipping price lookup (missing make/model/year for: {raw.title})")
+            logger.debug(f"  Skipping KBB lookup (missing make/model/year for: {raw.title})")
 
-        # Score
-        scored = scorer.score(raw, price_est)
+        # Carvana lookup — returns (carvana_price, kbb_from_carvana)
+        carvana_price = None
+        carvana_kbb = None
+        if use_carvana and raw.make and raw.model and raw.year:
+            carvana_price, carvana_kbb = get_carvana_price(
+                make=raw.make,
+                model=raw.model,
+                year=raw.year,
+                mileage=raw.mileage or 50000,
+            )
+            if carvana_price:
+                logger.debug(f"  Carvana: ${carvana_price:,}")
+            if carvana_kbb:
+                logger.debug(f"  Carvana KBB: ${carvana_kbb:,}")
+            # Use Carvana's real KBB value if we don't have one (or it's an estimate)
+            if carvana_kbb and (
+                price_est is None or price_est.source == "kbb_estimate"
+            ):
+                from pricing.kbb import PriceEstimate
+                price_est = PriceEstimate(
+                    source="carvana_kbb",
+                    make=raw.make, model=raw.model,
+                    year=raw.year, mileage=raw.mileage or 50000,
+                    fair_market_value=carvana_kbb,
+                    confidence="high",
+                )
+
+        # CarMax lookup
+        carmax_price = None
+        if use_carmax and raw.make and raw.model and raw.year:
+            carmax_price = get_carmax_price(
+                make=raw.make,
+                model=raw.model,
+                year=raw.year,
+                mileage=raw.mileage or 50000,
+            )
+            if carmax_price:
+                logger.debug(f"  CarMax: ${carmax_price:,}")
+
+        # Score (blends all available price sources)
+        scored = scorer.score(raw, price_est, carvana_price=carvana_price, carmax_price=carmax_price)
         scored_listings.append(scored)
         db.upsert_listing(scored)
 
@@ -135,9 +209,7 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
     # ── Step 4: Draft messages ────────────────────────────────────────────────
     logger.info("STEP 4 — Drafting messages for deals")
 
-    drafter = MessageDrafter(
-        use_claude=bool(os.getenv("ANTHROPIC_API_KEY"))
-    )
+    drafter = MessageDrafter(use_claude=bool(anthropic_key))
 
     great_deals = [l for l in scored_listings if l.is_great_deal]
     fair_deals = [l for l in scored_listings if l.is_fair_deal]
@@ -196,7 +268,8 @@ def export_csv(listings: list[ScoredListing]):
     path = OUTPUT.get("csv_path", "output/deals.csv")
     fieldnames = [
         "total_score", "deal_class", "title", "year", "make", "model",
-        "asking_price", "kbb_value", "savings_vs_kbb", "savings_pct",
+        "asking_price", "kbb_value", "carvana_value", "carmax_value",
+        "blended_market_value", "savings_vs_kbb", "savings_pct",
         "mileage", "transmission", "location", "source",
         "posted_date", "url", "suggested_offer", "message_draft",
     ]
@@ -227,17 +300,15 @@ def main():
     args = parse_args()
 
     if args.schedule:
-        # Simple built-in scheduler (use n8n/cron for production)
         import schedule as sched
 
-        interval_hours = 1  # Change this or read from config
+        interval_hours = 1
         logger.info(f"Scheduled mode: running every {interval_hours} hour(s)")
 
         sched.every(interval_hours).hours.do(
             run_pipeline, query=args.query, dry_run=args.dry_run
         )
 
-        # Run immediately on start
         run_pipeline(query=args.query, dry_run=args.dry_run)
 
         while True:
