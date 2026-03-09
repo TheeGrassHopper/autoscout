@@ -1,0 +1,115 @@
+{
+  "name": "AutoScout AI — Vehicle Deal Hunter",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 1 }] }
+      },
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [100, 300],
+      "notes": "Runs every hour between 7AM–10PM. Adjust interval here."
+    },
+    {
+      "parameters": {
+        "command": "cd /path/to/autoscout && python main.py --dry-run 2>&1"
+      },
+      "name": "Run AutoScout Scanner",
+      "type": "n8n-nodes-base.executeCommand",
+      "position": [320, 300],
+      "notes": "Runs the Python pipeline. Returns stdout with scan results."
+    },
+    {
+      "parameters": {
+        "filePath": "/path/to/autoscout/output/deals.csv"
+      },
+      "name": "Read Deals CSV",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "position": [540, 300],
+      "notes": "Reads the output CSV produced by the scanner."
+    },
+    {
+      "parameters": {
+        "operation": "fromFile",
+        "options": {}
+      },
+      "name": "Parse CSV",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "position": [760, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.deal_class }}",
+              "value2": "great"
+            }
+          ]
+        }
+      },
+      "name": "Filter: Great Deals Only",
+      "type": "n8n-nodes-base.if",
+      "position": [980, 300],
+      "notes": "Only great deals (score >= 75) proceed to messaging."
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "messages": {
+          "values": [
+            {
+              "role": "user",
+              "content": "=Draft a short, friendly seller message for this vehicle:\n\nVehicle: {{ $json.title }}\nAsking: ${{ $json.asking_price }}\nKBB Value: ${{ $json.kbb_value }}\nSavings: ${{ $json.savings_vs_kbb }} below market\nSuggested offer: ${{ $json.suggested_offer }}\nMileage: {{ $json.mileage }} miles\n\nWrite 3-4 sentences max. Sound like a real person. Express interest, mention you can move quickly, and gently ask if there's flexibility on price. Return only the message, nothing else."
+            }
+          ]
+        },
+        "options": { "maxTokens": 300 }
+      },
+      "name": "Claude: Draft Message",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "position": [1200, 200],
+      "notes": "Uses Claude to draft a personalized seller message."
+    },
+    {
+      "parameters": {
+        "to": "={{ $env.ALERT_PHONE }}",
+        "message": "=🔥 AutoScout GREAT DEAL:\n{{ $json.title }}\n${{ $json.asking_price }} (KBB: ${{ $json.kbb_value }})\nScore: {{ $json.total_score }}/100\n\n{{ $json.url }}"
+      },
+      "name": "SMS Alert (Twilio)",
+      "type": "n8n-nodes-base.twilio",
+      "position": [1200, 420],
+      "notes": "Sends SMS alert to your phone for great deals."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "YOUR_GOOGLE_SHEET_ID",
+        "sheetName": "Deals",
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        }
+      },
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [1420, 300],
+      "notes": "Optionally log all great deals to a Google Sheet for tracking."
+    }
+  ],
+  "connections": {
+    "Every Hour": { "main": [[{ "node": "Run AutoScout Scanner", "type": "main", "index": 0 }]] },
+    "Run AutoScout Scanner": { "main": [[{ "node": "Read Deals CSV", "type": "main", "index": 0 }]] },
+    "Read Deals CSV": { "main": [[{ "node": "Parse CSV", "type": "main", "index": 0 }]] },
+    "Parse CSV": { "main": [[{ "node": "Filter: Great Deals Only", "type": "main", "index": 0 }]] },
+    "Filter: Great Deals Only": {
+      "main": [
+        [{ "node": "Claude: Draft Message", "type": "main", "index": 0 }],
+        [{ "node": "Log to Google Sheets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Claude: Draft Message": { "main": [[{ "node": "SMS Alert (Twilio)", "type": "main", "index": 0 }]] },
+    "SMS Alert (Twilio)": { "main": [[{ "node": "Log to Google Sheets", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "saveDataSuccessExecution": "all", "saveManualExecutions": true },
+  "_notes": "Import this into n8n. Update file paths and credentials. Set ALERT_PHONE env var."
+}

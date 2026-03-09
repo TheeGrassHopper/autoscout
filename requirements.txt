@@ -1,0 +1,23 @@
+# HTTP & scraping
+requests==2.31.0
+beautifulsoup4==4.12.3
+lxml==5.1.0
+feedparser==6.0.11          # Craigslist RSS parsing
+
+# Data handling
+pandas==2.2.1
+
+# AI (Phase 2+)
+anthropic==0.21.3
+
+# Environment / config
+python-dotenv==1.0.1
+
+# Notifications (Phase 3, optional)
+twilio==8.13.0
+
+# Scheduling (Phase 3, optional — or use n8n instead)
+schedule==1.2.1
+
+# Rate limiting / retry
+tenacity==8.2.3

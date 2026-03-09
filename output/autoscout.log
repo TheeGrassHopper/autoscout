@@ -1,0 +1,11 @@
+12:35:26  INFO     autoscout.main — ============================================================
+12:35:26  INFO     autoscout.main — AutoScout AI — Starting pipeline
+12:35:26  INFO     autoscout.main — Location: phoenix (50mi radius)
+12:35:26  INFO     autoscout.main — Filters: year 2018–2025, max $40,000, max 100,000mi
+12:35:26  INFO     autoscout.main — ============================================================
+12:35:26  INFO     autoscout.main — STEP 1 — Scraping listings
+12:35:26  INFO     scrapers.craigslist — Scraping Craigslist phoenix — 4 category feeds
+12:35:37  INFO     scrapers.craigslist — Collected 0 unique raw listings from Craigslist
+12:35:37  INFO     scrapers.craigslist — 0 listings pass pre-filter (price/year range)
+12:35:37  INFO     autoscout.main — Craigslist: 0 listings after filtering
+12:35:37  WARNING  autoscout.main — No listings found. Check your filters or try a broader search.

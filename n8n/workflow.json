@@ -1,0 +1,144 @@
+{
+  "name": "AutoScout AI — Vehicle Deal Hunter",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7-22 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "🕐 Schedule Trigger (Hourly 7am–10pm)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "command": "cd /path/to/autoscout && python main.py 2>&1"
+      },
+      "id": "run-pipeline",
+      "name": "▶ Run AutoScout Pipeline",
+      "type": "n8n-nodes-base.executeCommand",
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "filePath": "/path/to/autoscout/data/results.csv"
+      },
+      "id": "read-results",
+      "name": "📊 Read Results CSV",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "operation": "fromFile",
+        "fileFormat": "csv"
+      },
+      "id": "parse-csv",
+      "name": "Parse CSV",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "position": [840, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json[\"score\"]}}",
+              "operation": "largerEqual",
+              "value2": 80
+            }
+          ]
+        }
+      },
+      "id": "filter-great-deals",
+      "name": "🔥 Filter Great Deals (score ≥ 80)",
+      "type": "n8n-nodes-base.if",
+      "position": [1040, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "create",
+        "phoneNumber": "={{$env.NOTIFY_PHONE}}",
+        "message": "🔥 AutoScout: Great Deal Found!\n{{$json[\"year\"]}} {{$json[\"make\"]}} {{$json[\"model\"]}}\nAsking: ${{$json[\"asking_price\"]}}\nKBB: ${{$json[\"kbb_value\"]}}\nScore: {{$json[\"score\"]}}/100\n{{$json[\"url\"]}}"
+      },
+      "id": "sms-alert",
+      "name": "📱 SMS Alert (Twilio)",
+      "type": "n8n-nodes-base.twilio",
+      "position": [1260, 220],
+      "credentials": {
+        "twilioApi": { "id": "twilio-creds", "name": "Twilio" }
+      }
+    },
+    {
+      "parameters": {
+        "filePath": "/path/to/autoscout/data/messages.csv"
+      },
+      "id": "read-messages",
+      "name": "✉ Read Drafted Messages",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "position": [1260, 400]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": "YOUR_GOOGLE_SHEET_ID",
+        "sheetName": "Deals",
+        "dataMode": "autoMapInputData"
+      },
+      "id": "save-to-sheets",
+      "name": "📈 Save to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [1260, 560],
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "google-creds", "name": "Google Sheets" }
+      }
+    }
+  ],
+  "connections": {
+    "🕐 Schedule Trigger (Hourly 7am–10pm)": {
+      "main": [[{ "node": "▶ Run AutoScout Pipeline", "type": "main", "index": 0 }]]
+    },
+    "▶ Run AutoScout Pipeline": {
+      "main": [[{ "node": "📊 Read Results CSV", "type": "main", "index": 0 }]]
+    },
+    "📊 Read Results CSV": {
+      "main": [[{ "node": "Parse CSV", "type": "main", "index": 0 }]]
+    },
+    "Parse CSV": {
+      "main": [[{ "node": "🔥 Filter Great Deals (score ≥ 80)", "type": "main", "index": 0 }]]
+    },
+    "🔥 Filter Great Deals (score ≥ 80)": {
+      "main": [
+        [
+          { "node": "📱 SMS Alert (Twilio)", "type": "main", "index": 0 },
+          { "node": "✉ Read Drafted Messages", "type": "main", "index": 0 },
+          { "node": "📈 Save to Google Sheets", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "_readme": {
+    "setup": [
+      "1. Install n8n: npm install -g n8n",
+      "2. Start n8n: n8n start",
+      "3. Import this JSON via Settings > Import Workflow",
+      "4. Update the file paths to match your autoscout/ directory",
+      "5. Add credentials: Twilio (for SMS) and Google Sheets (optional)",
+      "6. Set NOTIFY_PHONE in n8n environment variables",
+      "7. Activate the workflow"
+    ],
+    "alternative_to_n8n": "You can also use a simple cron job instead of n8n:",
+    "cron_example": "0 7-22 * * * cd /path/to/autoscout && python main.py >> logs/scan.log 2>&1"
+  }
+}
