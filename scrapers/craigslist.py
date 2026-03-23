@@ -25,6 +25,20 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 logger = logging.getLogger(__name__)
 
+# VIN pattern: 17 chars, no I/O/Q, must contain both letters and digits
+_VIN_RE = re.compile(r'\b([A-HJ-NPR-Z0-9]{17})\b')
+
+def _extract_vin(text: str) -> str:
+    """Extract a valid-looking VIN from free text. Returns first match or empty string."""
+    if not text:
+        return ""
+    for m in _VIN_RE.finditer(text.upper()):
+        candidate = m.group(1)
+        # Must have at least one letter and one digit (filters out all-digit sequences)
+        if re.search(r'[A-HJ-NPR-Z]', candidate) and re.search(r'[0-9]', candidate):
+            return candidate
+    return ""
+
 
 # ── Data Model ────────────────────────────────────────────────────────────────
 
@@ -47,6 +61,7 @@ class RawListing:
     condition: str = ""
     title_status: str = ""
     color: str = ""
+    vin: str = ""
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -88,6 +103,15 @@ class CraigslistScraper:
                     logger.info(f"  {cat}: {len(listings)} listings found")
                 except Exception as e:
                     logger.error(f"Craigslist [{cat}] failed: {e}")
+
+            # Fetch detail pages to extract description + VIN
+            logger.info(f"Fetching listing details for VIN/description extraction...")
+            for listing in all_listings:
+                if listing.url:
+                    try:
+                        self._fetch_detail(context, listing)
+                    except Exception as e:
+                        logger.debug(f"Detail fetch failed for {listing.listing_id}: {e}")
 
             browser.close()
 
@@ -149,17 +173,18 @@ class CraigslistScraper:
             mi = re.search(r"([\d,]+)\s*(k)?\s*mi\b", meta_text, re.IGNORECASE)
             if mi:
                 val = int(mi.group(1).replace(",", ""))
-                if mi.group(2):   # "k" suffix
+                if mi.group(2):
                     val *= 1000
                 mileage = val
+
+        # Posted date — dedicated span inside .meta
+        date_el = card.locator(".result-posted-date")
+        if date_el.count():
+            posted_date = date_el.first.inner_text().strip()
 
         loc_el = card.locator(".result-location")
         if loc_el.count():
             location = loc_el.first.inner_text().strip()
-
-        date_el = card.locator(".result-posted-date")
-        if date_el.count():
-            posted_date = date_el.first.inner_text().strip()
 
         images = [
             img.get_attribute("src")
@@ -173,6 +198,7 @@ class CraigslistScraper:
             image_urls=images[:6],
         )
         self._parse_title_fields(listing, title)
+        self._parse_title_status(listing)
         return listing
 
     def _build_url(self, category: str, query: str = "") -> str:
@@ -191,6 +217,10 @@ class CraigslistScraper:
             params["auto_miles_max"] = self.config["max_mileage"]
         if self.config.get("search_radius_miles"):
             params["search_distance"] = self.config["search_radius_miles"]
+        if self.config.get("zip_code"):
+            params["postal"] = self.config["zip_code"]
+        # Always filter for clean title only
+        params["auto_title"] = "clean"
         return f"{self.base}/search/{category}?{urlencode(params)}"
 
     def _filter(self, listings: list[RawListing]) -> list[RawListing]:
@@ -214,9 +244,59 @@ class CraigslistScraper:
             out.append(l)
         return out
 
+    def _fetch_detail(self, context, listing: RawListing):
+        """Visit the individual listing page to extract full description and VIN."""
+        page = context.new_page()
+        try:
+            page.goto(listing.url, wait_until="domcontentloaded", timeout=20_000)
+            page.wait_for_timeout(1500)
+
+            # Full description
+            desc_el = page.locator("#postingbody, .posting-description, section.postingbody")
+            if desc_el.count():
+                listing.description = desc_el.first.inner_text().strip()[:1200]
+
+            # Attribute table (title status, condition, etc.)
+            for row in page.locator(".attrgroup span, p.attrgroup span").all():
+                text = row.inner_text().strip().lower()
+                if "title status" in text:
+                    val = text.replace("title status:", "").strip()
+                    if val:
+                        listing.title_status = val
+                elif "condition" in text:
+                    listing.condition = text.replace("condition:", "").strip()
+
+            # Re-run title status detection now that we have full description
+            self._parse_title_status(listing)
+
+            # Extract VIN from description
+            vin = _extract_vin(listing.description)
+            if vin:
+                listing.vin = vin
+                logger.debug(f"  VIN found: {vin} — {listing.title[:40]}")
+
+        finally:
+            page.close()
+
     def _parse_price(self, text: str) -> Optional[int]:
         m = re.search(r"\$\s*([\d,]+)", text)
         return int(m.group(1).replace(",", "")) if m else None
+
+    def _parse_title_status(self, listing: RawListing):
+        """Detect title status from the listing title and description."""
+        text = f"{listing.title} {listing.description}".lower()
+        if re.search(r"\bsalvage\b", text):
+            listing.title_status = "salvage"
+        elif re.search(r"\brebuilt\b", text):
+            listing.title_status = "rebuilt"
+        elif re.search(r"\bclean\s*title\b", text):
+            listing.title_status = "clean"
+        elif re.search(r"\blien\b", text):
+            listing.title_status = "lien"
+        elif re.search(r"\bmissing\s*title\b|no\s*title\b", text):
+            listing.title_status = "missing"
+        else:
+            listing.title_status = "unknown"
 
     def _parse_title_fields(self, listing: RawListing, title: str):
         if not title:

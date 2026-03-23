@@ -13,6 +13,9 @@ export interface Deal {
   carmax_value: number | null;
   local_market_value: number | null;
   blended_market_value: number | null;
+  profit_estimate: number | null;
+  profit_margin_pct: number | null;
+  demand_score: number | null;
   savings: number;
   total_score: number;
   deal_class: DealClass;
@@ -21,6 +24,9 @@ export interface Deal {
   year: number;
   mileage: number;
   location: string;
+  vin: string | null;
+  title_status: string | null;
+  posted_date: string | null;
   first_seen: string;
   last_seen: string;
 }
@@ -89,7 +95,9 @@ export async function getPipelineStatus(): Promise<PipelineStatus> {
   return res.json();
 }
 
-export async function runPipeline(query = "", dryRun = true): Promise<void> {
+export async function runPipeline(query = "", dryRun = true, zipCode = "", radiusMiles = 0): Promise<void> {
   const params = new URLSearchParams({ query, dry_run: String(dryRun) });
+  if (zipCode) params.set("zip_code", zipCode);
+  if (radiusMiles) params.set("radius_miles", String(radiusMiles));
   await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST" });
 }

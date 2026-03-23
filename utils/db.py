@@ -36,6 +36,9 @@ class Database:
                     carvana_value       INTEGER,
                     local_market_value  INTEGER,
                     blended_market_value INTEGER,
+                    profit_estimate     INTEGER,
+                    profit_margin_pct   REAL,
+                    demand_score        INTEGER,
                     savings             INTEGER,
                     total_score         INTEGER,
                     deal_class          TEXT,
@@ -44,6 +47,9 @@ class Database:
                     year                INTEGER,
                     mileage             INTEGER,
                     location            TEXT,
+                    vin                 TEXT,
+                    title_status        TEXT,
+                    posted_date         TEXT,
                     first_seen          TEXT,
                     last_seen           TEXT
                 );
@@ -68,6 +74,12 @@ class Database:
                 ("carvana_value", "INTEGER"),
                 ("local_market_value", "INTEGER"),
                 ("blended_market_value", "INTEGER"),
+                ("profit_estimate", "INTEGER"),
+                ("profit_margin_pct", "REAL"),
+                ("demand_score", "INTEGER"),
+                ("vin", "TEXT"),
+                ("title_status", "TEXT"),
+                ("posted_date", "TEXT"),
             ]:
                 if col not in existing:
                     conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
@@ -81,14 +93,18 @@ class Database:
                 INSERT INTO listings
                     (listing_id, source, title, url, asking_price, kbb_value,
                      carvana_value, local_market_value, blended_market_value,
+                     profit_estimate, profit_margin_pct, demand_score,
                      savings, total_score, deal_class, make, model, year, mileage,
-                     location, first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     location, vin, title_status, posted_date, first_seen, last_seen)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(listing_id) DO UPDATE SET
                     kbb_value=excluded.kbb_value,
                     carvana_value=excluded.carvana_value,
                     local_market_value=excluded.local_market_value,
                     blended_market_value=excluded.blended_market_value,
+                    profit_estimate=excluded.profit_estimate,
+                    profit_margin_pct=excluded.profit_margin_pct,
+                    demand_score=excluded.demand_score,
                     savings=excluded.savings,
                     total_score=excluded.total_score,
                     deal_class=excluded.deal_class,
@@ -103,6 +119,9 @@ class Database:
                 scored_listing.carvana_value,
                 scored_listing.local_market_value,
                 scored_listing.blended_market_value,
+                scored_listing.profit_estimate,
+                scored_listing.profit_margin_pct,
+                scored_listing.demand_score,
                 scored_listing.savings_vs_kbb,
                 scored_listing.total_score,
                 scored_listing.deal_class,
@@ -111,6 +130,9 @@ class Database:
                 scored_listing.year,
                 scored_listing.mileage,
                 scored_listing.location,
+                scored_listing.vin or None,
+                getattr(scored_listing, "title_status", None),
+                scored_listing.posted_date,
                 now, now,
             ))
 

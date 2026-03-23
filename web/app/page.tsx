@@ -64,6 +64,8 @@ function PipelinePanel() {
     last_count: 0,
   });
   const [query, setQuery] = useState("");
+  const [zipCode, setZipCode] = useState("85288");
+  const [radius, setRadius] = useState("50");
   const [dryRun, setDryRun] = useState(true);
   const [logs, setLogs] = useState<string[]>([]);
   const logsRef = useRef<HTMLDivElement>(null);
@@ -101,7 +103,7 @@ function PipelinePanel() {
 
   const start = async () => {
     setLogs([]);
-    await runPipeline(query, dryRun);
+    await runPipeline(query, dryRun, zipCode, parseInt(radius) || 0);
     setStatus((s) => ({ ...s, running: true }));
   };
 
@@ -132,31 +134,60 @@ function PipelinePanel() {
         </span>
       </div>
 
-      <div className="flex gap-3 mb-4">
-        <input
-          className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300"
-          placeholder='Search query, e.g. "tacoma" (leave blank for all)'
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          disabled={status.running}
-        />
-        <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
+      <div className="space-y-3 mb-4">
+        <div className="flex gap-3">
           <input
-            type="checkbox"
-            checked={dryRun}
-            onChange={(e) => setDryRun(e.target.checked)}
-            className="rounded"
+            className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            placeholder='Search query, e.g. "tacoma" (leave blank for all)'
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
             disabled={status.running}
           />
-          Dry run
-        </label>
-        <button
-          onClick={start}
-          disabled={status.running}
-          className="px-5 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700 disabled:opacity-40 transition-colors"
-        >
-          {status.running ? "Running…" : "▶ Run"}
-        </button>
+        </div>
+        <div className="flex gap-3 items-center">
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500 whitespace-nowrap">From ZIP</label>
+            <input
+              className="w-28 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
+              placeholder="85288"
+              value={zipCode}
+              onChange={(e) => setZipCode(e.target.value)}
+              disabled={status.running}
+              maxLength={5}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500 whitespace-nowrap">Radius (mi)</label>
+            <input
+              className="w-20 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
+              placeholder="50"
+              value={radius}
+              onChange={(e) => setRadius(e.target.value)}
+              disabled={status.running}
+              type="number"
+              min={10}
+              max={500}
+            />
+          </div>
+          <div className="flex-1" />
+          <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={dryRun}
+              onChange={(e) => setDryRun(e.target.checked)}
+              className="rounded"
+              disabled={status.running}
+            />
+            Dry run
+          </label>
+          <button
+            onClick={start}
+            disabled={status.running}
+            className="px-5 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700 disabled:opacity-40 transition-colors"
+          >
+            {status.running ? "Running…" : "▶ Run"}
+          </button>
+        </div>
       </div>
 
       {logs.length > 0 && (
@@ -198,8 +229,8 @@ function TopDeals({ deals }: { deals: Deal[] }) {
             <th className="px-6 py-3 font-medium">Score</th>
             <th className="px-6 py-3 font-medium">Vehicle</th>
             <th className="px-6 py-3 font-medium">Asking</th>
-            <th className="px-6 py-3 font-medium">KBB</th>
-            <th className="px-6 py-3 font-medium">Savings</th>
+            <th className="px-6 py-3 font-medium">Carvana</th>
+            <th className="px-6 py-3 font-medium">Est. Profit</th>
             <th className="px-6 py-3 font-medium">Mileage</th>
             <th className="px-6 py-3 font-medium">Source</th>
           </tr>
@@ -224,12 +255,12 @@ function TopDeals({ deals }: { deals: Deal[] }) {
                 <div className="text-xs text-slate-400">{d.location}</div>
               </td>
               <td className="px-6 py-3 font-medium text-slate-900">{fmt(d.asking_price)}</td>
-              <td className="px-6 py-3 text-slate-500">{fmt(d.kbb_value)}</td>
+              <td className="px-6 py-3 text-slate-500">{fmt(d.carvana_value)}</td>
               <td className="px-6 py-3">
-                {d.savings > 0 ? (
-                  <span className="text-emerald-600 font-medium">▼ {fmt(d.savings)}</span>
+                {d.profit_estimate == null ? "—" : d.profit_estimate > 0 ? (
+                  <span className="text-emerald-600 font-bold">{fmt(d.profit_estimate)}</span>
                 ) : (
-                  <span className="text-red-500">▲ {fmt(Math.abs(d.savings))}</span>
+                  <span className="text-red-500">{fmt(d.profit_estimate)}</span>
                 )}
               </td>
               <td className="px-6 py-3 text-slate-500">{fmtMi(d.mileage)}</td>

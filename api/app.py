@@ -212,14 +212,20 @@ def run_pipeline_endpoint(
     background_tasks: BackgroundTasks,
     query: str = "",
     dry_run: bool = True,
+    zip_code: str = "",
+    radius_miles: int = 0,
 ):
     if _pipeline["running"]:
         raise HTTPException(409, "Pipeline already running")
-    background_tasks.add_task(_run_pipeline_bg, query=query, dry_run=dry_run)
+    background_tasks.add_task(
+        _run_pipeline_bg,
+        query=query, dry_run=dry_run,
+        zip_code=zip_code, radius_miles=radius_miles,
+    )
     return {"status": "started"}
 
 
-def _run_pipeline_bg(query: str = "", dry_run: bool = True):
+def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", radius_miles: int = 0):
     _pipeline["running"] = True
     _pipeline["last_run"] = datetime.now().isoformat()
 
@@ -230,7 +236,7 @@ def _run_pipeline_bg(query: str = "", dry_run: bool = True):
 
     try:
         from main import run_pipeline
-        results = run_pipeline(query=query, dry_run=dry_run)
+        results = run_pipeline(query=query, dry_run=dry_run, zip_code=zip_code or None, radius_miles=radius_miles or None)
         _pipeline["last_count"] = len(results)
         _pipeline["logs"].put(f"✅ Pipeline complete — {len(results)} listings processed")
     except Exception as e:

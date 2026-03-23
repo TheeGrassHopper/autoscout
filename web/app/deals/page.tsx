@@ -32,6 +32,30 @@ function fmtMi(n?: number | null) {
   return `${n.toLocaleString()} mi`;
 }
 
+const TITLE_BADGE: Record<string, string> = {
+  clean:   "bg-emerald-100 text-emerald-800",
+  rebuilt: "bg-amber-100 text-amber-800",
+  salvage: "bg-red-100 text-red-800",
+  lien:    "bg-orange-100 text-orange-800",
+  missing: "bg-red-100 text-red-800",
+  unknown: "bg-gray-100 text-gray-500",
+};
+
+function TitleBadge({ status }: { status?: string | null }) {
+  if (!status || status === "unknown") return <span className="text-slate-300 text-xs">—</span>;
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold capitalize ${TITLE_BADGE[status] ?? "bg-gray-100 text-gray-500"}`}>
+      {status}
+    </span>
+  );
+}
+
+function timeAgo(dateStr?: string | null): string {
+  if (!dateStr) return "—";
+  // Craigslist already gives human-readable strings like "3h ago", "2 days ago"
+  return dateStr;
+}
+
 function carvanaUrl(d: Deal): string {
   const make = (d.make || "").toLowerCase().replace(/\s+/g, "-");
   const model = (d.model || "").toLowerCase().replace(/\s+/g, "-");
@@ -86,11 +110,12 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
         <div className="grid grid-cols-2 gap-3">
           {[
             { label: "Asking Price", value: fmt(deal.asking_price), highlight: true },
-            { label: "KBB Value", value: fmt(deal.kbb_value) },
-            { label: "Local Market", value: fmt(deal.local_market_value) },
+            { label: "Est. Profit", value: deal.profit_estimate != null ? `${fmt(deal.profit_estimate)} (${deal.profit_margin_pct != null ? (deal.profit_margin_pct*100).toFixed(0)+"%" : "?"})` : "—" },
+            { label: "Carvana Retail", value: fmt(deal.carvana_value) },
             { label: "Blended Market", value: fmt(deal.blended_market_value) },
             { label: "Mileage", value: fmtMi(deal.mileage) },
             { label: "Year", value: deal.year?.toString() ?? "—" },
+            { label: "Title Status", value: deal.title_status ?? "—" },
           ].map(({ label, value, highlight }) => (
             <div key={label} className="bg-gray-50 rounded-lg p-4">
               <div className="text-xs text-slate-500 mb-1">{label}</div>
@@ -157,7 +182,30 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
           View Listing ↗
         </a>
 
+        {/* VIN block */}
+        {deal.vin && (
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-4 space-y-2">
+            <div className="text-xs text-slate-500 font-medium uppercase tracking-wide">VIN</div>
+            <div className="font-mono text-slate-900 font-bold tracking-widest text-sm">{deal.vin}</div>
+            <div className="flex gap-2 flex-wrap">
+              <a href={`https://www.carvana.com/sell-my-car/${deal.vin}`} target="_blank" rel="noopener noreferrer"
+                className="px-3 py-1 bg-[#00aed9] text-white text-xs font-semibold rounded hover:opacity-90">
+                Carvana Offer ↗
+              </a>
+              <a href={`https://www.carmax.com/car-value/vin/${deal.vin}`} target="_blank" rel="noopener noreferrer"
+                className="px-3 py-1 bg-[#e31837] text-white text-xs font-semibold rounded hover:opacity-90">
+                CarMax Offer ↗
+              </a>
+              <a href={`https://www.kbb.com/instant-cash-offer/?vin=${deal.vin}`} target="_blank" rel="noopener noreferrer"
+                className="px-3 py-1 bg-slate-700 text-white text-xs font-semibold rounded hover:opacity-90">
+                KBB Value ↗
+              </a>
+            </div>
+          </div>
+        )}
+
         <div className="text-xs text-slate-400 space-y-1">
+          <div>Posted: {deal.posted_date ? `${timeAgo(deal.posted_date)} (${deal.posted_date})` : "—"}</div>
           <div>First seen: {deal.first_seen ? new Date(deal.first_seen).toLocaleString() : "—"}</div>
           <div>Last seen: {deal.last_seen ? new Date(deal.last_seen).toLocaleString() : "—"}</div>
           <div>ID: {deal.listing_id}</div>
@@ -242,11 +290,13 @@ export default function DealsPage() {
                 <th className="px-4 py-3 font-medium">Score</th>
                 <th className="px-4 py-3 font-medium">Vehicle</th>
                 <th className="px-4 py-3 font-medium">Asking</th>
-                <th className="px-4 py-3 font-medium">Local Mkt</th>
+                <th className="px-4 py-3 font-medium">Est. Profit</th>
                 <th className="px-4 py-3 font-medium">Carvana</th>
                 <th className="px-4 py-3 font-medium">CarMax</th>
-                <th className="px-4 py-3 font-medium">Savings</th>
+                <th className="px-4 py-3 font-medium">Local Mkt</th>
                 <th className="px-4 py-3 font-medium">Mileage</th>
+                <th className="px-4 py-3 font-medium">Title</th>
+                <th className="px-4 py-3 font-medium">Posted</th>
                 <th className="px-4 py-3 font-medium">Source</th>
               </tr>
             </thead>
@@ -270,46 +320,46 @@ export default function DealsPage() {
                       <div className="text-xs text-slate-400">{d.year} · {d.make} {d.model}</div>
                     </td>
                     <td className="px-4 py-3 font-medium text-slate-900">{fmt(d.asking_price)}</td>
-                    <td className="px-4 py-3 text-slate-500">{fmt(d.local_market_value)}</td>
+                    {/* Est. Profit */}
+                    <td className="px-4 py-3">
+                      {d.profit_estimate == null ? (
+                        <span className="text-slate-300">—</span>
+                      ) : d.profit_estimate > 0 ? (
+                        <div>
+                          <span className="text-emerald-600 font-bold">{fmt(d.profit_estimate)}</span>
+                          {d.profit_margin_pct != null && (
+                            <span className="text-emerald-500 text-xs ml-1">
+                              {(d.profit_margin_pct * 100).toFixed(0)}%
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-red-500 font-medium">{fmt(d.profit_estimate)}</span>
+                      )}
+                    </td>
                     {/* Carvana: price + link */}
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       {d.make && d.model ? (
-                        <a
-                          href={carvanaUrl(d)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="group inline-flex items-center gap-1.5 text-[#00aed9] font-medium hover:underline"
-                        >
+                        <a href={carvanaUrl(d)} target="_blank" rel="noopener noreferrer"
+                          className="group inline-flex items-center gap-1.5 text-[#00aed9] font-medium hover:underline">
                           {fmt(d.carvana_value)}
                           <span className="text-xs opacity-60 group-hover:opacity-100">↗</span>
                         </a>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
+                      ) : <span className="text-slate-400">—</span>}
                     </td>
-                    {/* CarMax: link only (blocked by Cloudflare) */}
+                    {/* CarMax: link only */}
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       {d.make && d.model ? (
-                        <a
-                          href={carmaxUrl(d)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#e31837]/10 text-[#e31837] text-xs font-semibold hover:bg-[#e31837]/20 transition-colors"
-                        >
+                        <a href={carmaxUrl(d)} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#e31837]/10 text-[#e31837] text-xs font-semibold hover:bg-[#e31837]/20 transition-colors">
                           Search ↗
                         </a>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
+                      ) : <span className="text-slate-400">—</span>}
                     </td>
-                    <td className="px-4 py-3">
-                      {savings == null ? "—" : savings > 0 ? (
-                        <span className="text-emerald-600 font-medium">▼ {fmt(savings)}</span>
-                      ) : (
-                        <span className="text-red-500">▲ {fmt(Math.abs(savings))}</span>
-                      )}
-                    </td>
+                    <td className="px-4 py-3 text-slate-500">{fmt(d.local_market_value)}</td>
                     <td className="px-4 py-3 text-slate-500">{fmtMi(d.mileage)}</td>
+                    <td className="px-4 py-3"><TitleBadge status={d.title_status} /></td>
+                    <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">{timeAgo(d.posted_date)}</td>
                     <td className="px-4 py-3">
                       <span className="inline-block px-2 py-0.5 bg-slate-100 text-slate-600 text-xs rounded">
                         {d.source}

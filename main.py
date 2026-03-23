@@ -62,7 +62,7 @@ from utils.notifier import Notifier
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
-def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
+def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None, radius_miles: int = None) -> list[ScoredListing]:
     """
     Execute the full AutoScout pipeline.
     Returns a list of scored listings.
@@ -72,7 +72,10 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
 
     logger.info("=" * 60)
     logger.info("AutoScout AI — Starting pipeline")
-    logger.info(f"Location: {LOCATION['city']} ({LOCATION['search_radius_miles']}mi radius)")
+    # Runtime overrides from the UI
+    effective_zip = zip_code or LOCATION.get("zip_code", "85001")
+    effective_radius = radius_miles or LOCATION.get("search_radius_miles", 50)
+    logger.info(f"Location: {LOCATION['city']} | zip {effective_zip} | {effective_radius}mi radius")
     logger.info(f"Filters: year {FILTERS['min_year']}–{FILTERS['max_year']}, "
                 f"max ${FILTERS['max_price']:,}, max {FILTERS['max_mileage']:,}mi")
     logger.info("=" * 60)
@@ -87,7 +90,7 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
     if SOURCES.get("craigslist"):
         scraper = CraigslistScraper(
             city=LOCATION["city"],
-            config={**FILTERS, "search_radius_miles": LOCATION.get("search_radius_miles", 50)},
+            config={**FILTERS, "search_radius_miles": effective_radius, "zip_code": effective_zip},
             vehicle_types=VEHICLE_TYPES,
         )
         cl_listings = scraper.scrape(query=query)
@@ -97,19 +100,28 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
                 all_raw.append(l)
         logger.info(f"Craigslist: {len(cl_listings)} listings after filtering")
 
-    # Facebook Marketplace (requires APIFY_API_TOKEN)
+    # Facebook Marketplace (requires APIFY_API_TOKEN + FB_COOKIES)
     if SOURCES.get("facebook_marketplace"):
+        import json as _json
         apify_token = os.getenv("APIFY_API_TOKEN", "")
-        keywords = [query] if query else (SEARCH_QUERIES or ["used car"])
+        fb_cookies_raw = os.getenv("FB_COOKIES", "")
+        fb_cookies = None
+        if fb_cookies_raw:
+            try:
+                fb_cookies = _json.loads(fb_cookies_raw)
+            except Exception:
+                logger.warning("FB_COOKIES in .env is not valid JSON — skipping FB scrape")
+        keywords = [query] if query else (SEARCH_QUERIES or [""])
         fb_listings = scrape_facebook(
             location=LOCATION["city"],
             keywords=[k for k in keywords if k],
             min_price=FILTERS["min_price"],
             max_price=FILTERS["max_price"],
             max_mileage=FILTERS["max_mileage"],
-            radius_miles=LOCATION["search_radius_miles"],
+            radius_miles=effective_radius,
             apify_token=apify_token,
             seen_ids=seen_ids,
+            fb_cookies=fb_cookies,
         )
         all_raw.extend(fb_listings)
         logger.info(f"Facebook Marketplace: {len(fb_listings)} new listings")
