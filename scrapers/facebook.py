@@ -63,6 +63,8 @@ def scrape_facebook(
         )
         return []
 
+    _check_cookie_expiry(fb_cookies)
+
     try:
         from apify_client import ApifyClient
     except ImportError:
@@ -97,19 +99,36 @@ def scrape_facebook(
         "startUrls": search_urls,
         "maxItems": 100,
         "cookies": fb_cookies,
+        "sessionCookies": fb_cookies,   # some actor versions use this key
     }
 
     logger.info(f"Triggering Apify FB Marketplace scrape — {len(search_urls)} URL(s), radius {radius_miles}mi")
+    logger.info(f"FB search URL: {search_urls[0]['url'] if search_urls else '(none)'}")
 
     try:
         run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input, timeout_secs=300)
+
+        # Log run status so we can diagnose failures
+        run_status = run.get("status", "UNKNOWN")
+        logger.info(f"Apify run status: {run_status} (id={run.get('id', '?')})")
+        if run_status not in ("SUCCEEDED", "RUNNING"):
+            logger.warning(f"Apify run did not succeed — status: {run_status}. Check https://console.apify.com/actors/runs/{run.get('id','')}")
+
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         logger.info(f"Apify returned {len(items)} FB items")
+
+        # Log first raw item so we can diagnose field name issues
+        if items:
+            first = items[0]
+            logger.info(f"FB item sample keys: {list(first.keys())[:10]}")
+            logger.info(f"FB item sample: price={first.get('price')}, id={first.get('id')}, title={str(first.get('title',''))[:40]}")
+        else:
+            logger.warning("Apify returned 0 FB items — possible causes: cookies expired, actor blocked, or no listings match filters")
 
         for item in items:
             # Skip error items
             if item.get("error"):
-                logger.debug(f"FB item error: {item.get('errorDescription')}")
+                logger.warning(f"FB item error: {item.get('errorDescription', item.get('error'))}")
                 continue
 
             listing_id = str(item.get("id", "") or item.get("listing_id", ""))
@@ -122,6 +141,7 @@ def scrape_facebook(
 
             price = _parse_fb_price(item.get("price", ""))
             if not price:
+                logger.debug(f"FB skip (no price): {item.get('title','')[:40]}")
                 continue
 
             description = (item.get("description", "") or "")[:1200]
@@ -171,6 +191,32 @@ def scrape_facebook(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _check_cookie_expiry(cookies: list):
+    """Warn in logs if any critical FB cookies are expiring soon or already expired."""
+    import time
+    now = time.time()
+    critical = {"c_user", "xs", "datr", "fr", "sb"}
+    for cookie in cookies:
+        name = cookie.get("name", "")
+        exp = cookie.get("expirationDate")
+        if name not in critical or not exp:
+            continue
+        days_left = (exp - now) / 86400
+        if days_left < 0:
+            logger.error(
+                f"FB cookie '{name}' has EXPIRED ({abs(days_left):.0f} days ago) — "
+                f"re-export your Facebook cookies and update FB_COOKIES in .env"
+            )
+        elif days_left < 7:
+            logger.warning(
+                f"FB cookie '{name}' expires in {days_left:.0f} day(s) — "
+                f"re-export soon to avoid scrape failures"
+            )
+        elif days_left < 21:
+            logger.warning(
+                f"FB cookie '{name}' expires in {days_left:.0f} days — plan to refresh"
+            )
 
 def _parse_fb_price(price_str: str) -> Optional[int]:
     clean = re.sub(r"[^\d]", "", str(price_str))

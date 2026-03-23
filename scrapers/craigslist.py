@@ -28,6 +28,85 @@ logger = logging.getLogger(__name__)
 # VIN pattern: 17 chars, no I/O/Q, must contain both letters and digits
 _VIN_RE = re.compile(r'\b([A-HJ-NPR-Z0-9]{17})\b')
 
+def _extract_mileage_from_description(text: str) -> Optional[int]:
+    """
+    Mine the listing description for mileage mentions.
+    Handles: "125k miles", "125,000 miles", "125K mi", "odometer: 125,000",
+             "at 125k", "with 125000 miles", "125k on it", etc.
+    Returns the most prominent mileage found, or None.
+    """
+    if not text:
+        return None
+
+    candidates = []
+
+    # Pattern: number followed by k/K then miles/mi (e.g. "125k miles", "45K mi")
+    for m in re.finditer(r'\b(\d{1,3})[kK]\s*(?:miles?|mi)?\b', text):
+        val = int(m.group(1)) * 1000
+        if 1_000 <= val <= 400_000:
+            candidates.append(val)
+
+    # Pattern: number with comma separator (e.g. "125,000 miles", "45,000 mi")
+    for m in re.finditer(r'\b(\d{1,3}),(\d{3})\s*(?:miles?|mi)\b', text, re.IGNORECASE):
+        val = int(m.group(1)) * 1000 + int(m.group(2))
+        if 1_000 <= val <= 400_000:
+            candidates.append(val)
+
+    # Pattern: plain number near "mile" context (e.g. "has 85000 miles")
+    for m in re.finditer(r'\b(\d{4,6})\s*(?:miles?|mi)\b', text, re.IGNORECASE):
+        val = int(m.group(1))
+        if 1_000 <= val <= 400_000:
+            candidates.append(val)
+
+    if not candidates:
+        return None
+
+    # Return the most commonly mentioned value, or median if all differ
+    from statistics import median
+    return int(median(candidates))
+
+
+def _reconcile_mileage(
+    card_mileage: Optional[int],
+    attr_mileage: Optional[int],
+    desc_mileage: Optional[int],
+) -> Optional[int]:
+    """
+    Reconcile potentially conflicting mileage values from three sources.
+
+    Common seller mistake: entering "125" meaning 125,000 miles. Craigslist
+    shows this as "125 mi" on the card. The attribute table and description
+    usually have the correct value.
+
+    Logic:
+    1. If attr or desc mileage looks like card_mileage × ~1000, the card is
+       missing three zeros — use the larger value.
+    2. Otherwise prefer attr_mileage, then desc_mileage, then card_mileage.
+    """
+    best = attr_mileage or desc_mileage or card_mileage
+    if not best:
+        return card_mileage
+
+    # Detect "missing zeros" pattern:
+    # card says 125, attr/desc says 125,000 → ratio ~1000
+    if card_mileage and card_mileage < 1_000:
+        for source in (attr_mileage, desc_mileage):
+            if source and 500 <= source <= 400_000:
+                ratio = source / card_mileage
+                if 800 <= ratio <= 1200:   # clearly the card dropped the trailing zeros
+                    return source
+
+    # If card mileage is suspiciously low for the context, prefer attr/desc
+    if card_mileage and card_mileage < 500:
+        if attr_mileage and attr_mileage > card_mileage * 10:
+            return attr_mileage
+        if desc_mileage and desc_mileage > card_mileage * 10:
+            return desc_mileage
+
+    # Normal case: trust attr over desc over card
+    return attr_mileage or desc_mileage or card_mileage
+
+
 def _extract_vin(text: str) -> str:
     """Extract a valid-looking VIN from free text. Returns first match or empty string."""
     if not text:
@@ -245,7 +324,7 @@ class CraigslistScraper:
         return out
 
     def _fetch_detail(self, context, listing: RawListing):
-        """Visit the individual listing page to extract full description and VIN."""
+        """Visit the individual listing page to extract full description, mileage, and VIN."""
         page = context.new_page()
         try:
             page.goto(listing.url, wait_until="domcontentloaded", timeout=20_000)
@@ -256,15 +335,41 @@ class CraigslistScraper:
             if desc_el.count():
                 listing.description = desc_el.first.inner_text().strip()[:1200]
 
-            # Attribute table (title status, condition, etc.)
+            # Attribute table — odometer, title status, condition
+            odometer_from_attrs: Optional[int] = None
             for row in page.locator(".attrgroup span, p.attrgroup span").all():
-                text = row.inner_text().strip().lower()
-                if "title status" in text:
-                    val = text.replace("title status:", "").strip()
+                text = row.inner_text().strip()
+                lower = text.lower()
+                if "odometer" in lower or "mileage" in lower:
+                    m = re.search(r"([\d,]+)", text)
+                    if m:
+                        odometer_from_attrs = int(m.group(1).replace(",", ""))
+                elif "title status" in lower:
+                    val = lower.replace("title status:", "").strip()
                     if val:
                         listing.title_status = val
-                elif "condition" in text:
-                    listing.condition = text.replace("condition:", "").strip()
+                elif "condition" in lower:
+                    listing.condition = lower.replace("condition:", "").strip()
+
+            # ── Mileage correction ────────────────────────────────────────────
+            # Sellers sometimes type "125" meaning 125k miles. We reconcile:
+            # 1. Prefer the structured odometer attribute (most reliable)
+            # 2. Fall back to description text mining
+            # 3. Apply sanity check: if card mileage looks like it's missing zeros
+            #    (e.g., card says 125 but attrs/description say 125,000), correct it.
+
+            candidate = odometer_from_attrs or listing.mileage
+
+            # Also mine description for mileage mentions as a cross-check
+            desc_mileage = _extract_mileage_from_description(listing.description)
+
+            corrected = _reconcile_mileage(listing.mileage, candidate, desc_mileage)
+            if corrected and corrected != listing.mileage:
+                logger.debug(
+                    f"  Mileage corrected: {listing.mileage} → {corrected:,} "
+                    f"(attr={odometer_from_attrs}, desc={desc_mileage}) — {listing.title[:40]}"
+                )
+                listing.mileage = corrected
 
             # Re-run title status detection now that we have full description
             self._parse_title_status(listing)

@@ -141,22 +141,18 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None, r
     else:
         logger.info("STEP 1.5 — Skipping AI normalization (no ANTHROPIC_API_KEY)")
 
-    # ── Step 1.75: Build local market comps ──────────────────────────────────
-    # Group scraped listings by make+model, compute median asking price
-    # This becomes the "local market" price comp (30% weight in scoring)
-    from collections import defaultdict
-    import statistics
-    _mkt: dict = defaultdict(list)
-    for l in all_raw:
-        if l.make and l.model and l.price:
-            key = (l.make.lower(), l.model.lower())
-            _mkt[key].append(l.price)
-    local_market_comps: dict = {}
-    for key, prices in _mkt.items():
-        if len(prices) >= 2:  # Only use if we have enough comps
-            local_market_comps[key] = int(statistics.median(prices))
-            logger.info(f"Local market comp: {key[0].title()} {key[1].title()} → "
-                        f"${local_market_comps[key]:,} ({len(prices)} listings)")
+    # ── Step 1.75: Build market comps (national CL + FB from main run) ───────
+    # Comps filtered per-listing to year ±1 and mileage ±10k miles.
+    # National Craigslist (no city limit) + Facebook 500mi (already scraped).
+    logger.info("STEP 1.75 — Building market comps (national CL + FB from main run)")
+    from utils.comps import CompsEngine
+    comps_engine = CompsEngine(all_raw)   # pre-load main-run listings as initial comps
+    unique_vehicles = {
+        (l.make, l.model)
+        for l in all_raw
+        if l.make and l.model
+    }
+    comps_engine.fetch_all_comps(unique_vehicles)
 
     # ── Step 2: Price lookups ─────────────────────────────────────────────────
     logger.info("STEP 2 — Fetching market values (Carvana + Local Market + KBB)")
@@ -227,10 +223,12 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None, r
             if carmax_price:
                 logger.debug(f"  CarMax: ${carmax_price:,}")
 
-        # Local market comp for this vehicle
+        # Local market comp — year ±1, mileage ±10k, national CL + FB pool
         local_mkt_price = None
         if raw.make and raw.model:
-            local_mkt_price = local_market_comps.get((raw.make.lower(), raw.model.lower()))
+            local_mkt_price = comps_engine.get_market_price(
+                raw.make, raw.model, raw.year, raw.mileage
+            )
 
         # Score (blends all available price sources)
         scored = scorer.score(

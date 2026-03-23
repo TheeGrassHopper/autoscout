@@ -36,7 +36,7 @@ function MessageCard({
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-4">
+      <div className="px-4 md:px-6 py-4 border-b border-gray-100 flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${CLASS_BADGE[msg.deal_class]}`}>
@@ -61,7 +61,7 @@ function MessageCard({
       </div>
 
       {/* Message body */}
-      <div className="px-6 py-4">
+      <div className="px-4 md:px-6 py-4">
         <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">
           Drafted Message
         </div>
@@ -71,7 +71,7 @@ function MessageCard({
       </div>
 
       {/* Actions */}
-      <div className="px-6 py-4 border-t border-gray-100 flex items-center gap-3">
+      <div className="px-4 md:px-6 py-4 border-t border-gray-100 flex flex-wrap items-center gap-2 md:gap-3">
         <a
           href={msg.url}
           target="_blank"
@@ -108,7 +108,7 @@ function MessageCard({
         </a>
       </div>
 
-      <div className="px-6 pb-3 text-xs text-slate-400">
+      <div className="px-4 md:px-6 pb-3 text-xs text-slate-400">
         Drafted {new Date(msg.drafted_at).toLocaleString()}
       </div>
     </div>
@@ -148,7 +148,7 @@ export default function MessagesPage() {
   const visible = messages.filter((m) => !dismissed.has(m.id));
 
   return (
-    <div className="p-8 space-y-6 max-w-3xl mx-auto">
+    <div className="p-4 md:p-8 space-y-4 md:space-y-6 max-w-3xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Message Queue</h1>

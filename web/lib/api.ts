@@ -3,6 +3,7 @@ const BASE = "http://localhost:8000";
 export type DealClass = "great" | "fair" | "poor";
 
 export interface Deal {
+  saved_at?: string;
   listing_id: string;
   source: string;
   title: string;
@@ -93,6 +94,23 @@ export async function skipMessage(id: number): Promise<void> {
 export async function getPipelineStatus(): Promise<PipelineStatus> {
   const res = await fetch(`${BASE}/api/pipeline/status`, { cache: "no-store" });
   return res.json();
+}
+
+export async function getFavorites(): Promise<Deal[]> {
+  const res = await fetch(`${BASE}/api/favorites`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function saveFavorite(listingId: string): Promise<void> {
+  await fetch(`${BASE}/api/favorites/${listingId}`, { method: "POST" });
+}
+
+export async function removeFavorite(listingId: string): Promise<void> {
+  await fetch(`${BASE}/api/favorites/${listingId}`, { method: "DELETE" });
+}
+
+export async function resetDatabase(): Promise<void> {
+  await fetch(`${BASE}/api/database`, { method: "DELETE" });
 }
 
 export async function runPipeline(query = "", dryRun = true, zipCode = "", radiusMiles = 0): Promise<void> {

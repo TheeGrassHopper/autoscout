@@ -51,6 +51,7 @@ app.add_middleware(
 )
 
 DB_PATH = OUTPUT.get("db_path", "output/autoscout.db")
+FAV_DB_PATH = "output/favorites.db"
 
 # ── Pipeline state ────────────────────────────────────────────────────────────
 
@@ -73,6 +74,47 @@ def _rows(rows) -> list[dict]:
 
 def _db_exists() -> bool:
     return os.path.exists(DB_PATH)
+
+def _fav_db():
+    conn = sqlite3.connect(FAV_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def _ensure_fav_schema():
+    with _fav_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS favorites (
+                listing_id           TEXT PRIMARY KEY,
+                source               TEXT,
+                title                TEXT,
+                url                  TEXT,
+                asking_price         INTEGER,
+                kbb_value            INTEGER,
+                carvana_value        INTEGER,
+                carmax_value         INTEGER,
+                local_market_value   INTEGER,
+                blended_market_value INTEGER,
+                profit_estimate      INTEGER,
+                profit_margin_pct    REAL,
+                demand_score         INTEGER,
+                savings              INTEGER,
+                total_score          INTEGER,
+                deal_class           TEXT,
+                make                 TEXT,
+                model                TEXT,
+                year                 INTEGER,
+                mileage              INTEGER,
+                location             TEXT,
+                vin                  TEXT,
+                title_status         TEXT,
+                posted_date          TEXT,
+                first_seen           TEXT,
+                last_seen            TEXT,
+                saved_at             TEXT NOT NULL
+            )
+        """)
+
+_ensure_fav_schema()
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -152,6 +194,57 @@ def get_deal(listing_id: str):
     deal = dict(row)
     deal["messages"] = _rows(msgs)
     return deal
+
+
+# ── Favorites ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/favorites")
+def get_favorites():
+    _ensure_fav_schema()
+    with _fav_db() as conn:
+        rows = conn.execute("SELECT * FROM favorites ORDER BY saved_at DESC").fetchall()
+    return _rows(rows)
+
+
+@app.post("/api/favorites/{listing_id}")
+def save_favorite(listing_id: str):
+    if not _db_exists():
+        raise HTTPException(404, "Main database not found")
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM listings WHERE listing_id=?", (listing_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Listing not found")
+
+    data = dict(row)
+    data["saved_at"] = datetime.now().isoformat()
+    data.setdefault("carmax_value", None)
+
+    _ensure_fav_schema()
+    with _fav_db() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO favorites (
+                listing_id, source, title, url, asking_price, kbb_value,
+                carvana_value, carmax_value, local_market_value, blended_market_value,
+                profit_estimate, profit_margin_pct, demand_score, savings,
+                total_score, deal_class, make, model, year, mileage, location,
+                vin, title_status, posted_date, first_seen, last_seen, saved_at
+            ) VALUES (
+                :listing_id, :source, :title, :url, :asking_price, :kbb_value,
+                :carvana_value, :carmax_value, :local_market_value, :blended_market_value,
+                :profit_estimate, :profit_margin_pct, :demand_score, :savings,
+                :total_score, :deal_class, :make, :model, :year, :mileage, :location,
+                :vin, :title_status, :posted_date, :first_seen, :last_seen, :saved_at
+            )
+        """, data)
+    return {"status": "saved", "listing_id": listing_id}
+
+
+@app.delete("/api/favorites/{listing_id}")
+def remove_favorite(listing_id: str):
+    _ensure_fav_schema()
+    with _fav_db() as conn:
+        conn.execute("DELETE FROM favorites WHERE listing_id=?", (listing_id,))
+    return {"status": "removed", "listing_id": listing_id}
 
 
 # ── Messages ──────────────────────────────────────────────────────────────────
@@ -271,6 +364,17 @@ def stream_logs():
                 yield f"data: {json.dumps({'ping': True})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ── Database reset ────────────────────────────────────────────────────────────
+
+@app.delete("/api/database")
+def reset_database():
+    if _pipeline["running"]:
+        raise HTTPException(409, "Pipeline is running — stop it before clearing the database")
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+    return {"status": "cleared"}
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
