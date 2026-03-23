@@ -49,6 +49,7 @@ class ScoredListing:
     kbb_value: Optional[int] = None
     carvana_value: Optional[int] = None
     carmax_value: Optional[int] = None
+    local_market_value: Optional[int] = None     # median of similar local listings
     blended_market_value: Optional[int] = None   # consensus across all sources
     price_source_confidence: str = "low"
     savings_vs_kbb: Optional[int] = None
@@ -100,6 +101,7 @@ class DealScorer:
         price_estimate: Optional[PriceEstimate],
         carvana_price: Optional[int] = None,
         carmax_price: Optional[int] = None,
+        local_market_price: Optional[int] = None,
     ) -> ScoredListing:
         """Score a listing and return a ScoredListing."""
 
@@ -120,20 +122,22 @@ class DealScorer:
             asking_price=listing.price,
             carvana_value=carvana_price,
             carmax_value=carmax_price,
+            local_market_value=local_market_price,
         )
 
         if price_estimate:
             scored.kbb_value = price_estimate.fair_market_value
             scored.price_source_confidence = price_estimate.confidence
 
-        # Blend all available market price sources (weighted avg: KBB 50%, Carvana 30%, CarMax 20%)
+        # Blend all available market price sources
+        # Priority: Carvana (50%) > local market comps (30%) > KBB fallback (20%)
         prices, weights = [], []
-        if scored.kbb_value:
-            prices.append(scored.kbb_value); weights.append(0.50)
         if carvana_price:
-            prices.append(carvana_price); weights.append(0.30)
-        if carmax_price:
-            prices.append(carmax_price); weights.append(0.20)
+            prices.append(carvana_price); weights.append(0.50)
+        if local_market_price:
+            prices.append(local_market_price); weights.append(0.30)
+        if scored.kbb_value:
+            prices.append(scored.kbb_value); weights.append(0.20)
 
         if prices:
             total_weight = sum(weights)
@@ -181,10 +185,12 @@ class DealScorer:
             scored.suggested_offer = int(scored.asking_price * offer_pct)
 
         sources = []
-        if scored.kbb_value:
-            sources.append(f"KBB ${scored.kbb_value:,}")
         if scored.carvana_value:
             sources.append(f"Carvana ${scored.carvana_value:,}")
+        if scored.local_market_value:
+            sources.append(f"LocalMkt ${scored.local_market_value:,}")
+        if scored.kbb_value:
+            sources.append(f"KBB ${scored.kbb_value:,}")
         if scored.carmax_value:
             sources.append(f"CarMax ${scored.carmax_value:,}")
         ask_str = f"${scored.asking_price:,}" if scored.asking_price else "no price"

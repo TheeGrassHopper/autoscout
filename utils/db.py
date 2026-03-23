@@ -27,22 +27,25 @@ class Database:
         with self._connect() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS listings (
-                    listing_id      TEXT PRIMARY KEY,
-                    source          TEXT,
-                    title           TEXT,
-                    url             TEXT,
-                    asking_price    INTEGER,
-                    kbb_value       INTEGER,
-                    savings         INTEGER,
-                    total_score     INTEGER,
-                    deal_class      TEXT,
-                    make            TEXT,
-                    model           TEXT,
-                    year            INTEGER,
-                    mileage         INTEGER,
-                    location        TEXT,
-                    first_seen      TEXT,
-                    last_seen       TEXT
+                    listing_id          TEXT PRIMARY KEY,
+                    source              TEXT,
+                    title               TEXT,
+                    url                 TEXT,
+                    asking_price        INTEGER,
+                    kbb_value           INTEGER,
+                    carvana_value       INTEGER,
+                    local_market_value  INTEGER,
+                    blended_market_value INTEGER,
+                    savings             INTEGER,
+                    total_score         INTEGER,
+                    deal_class          TEXT,
+                    make                TEXT,
+                    model               TEXT,
+                    year                INTEGER,
+                    mileage             INTEGER,
+                    location            TEXT,
+                    first_seen          TEXT,
+                    last_seen           TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS messages (
@@ -58,6 +61,16 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_listings_score ON listings(total_score DESC);
                 CREATE INDEX IF NOT EXISTS idx_listings_class ON listings(deal_class);
             """)
+        # Migrate existing DBs: add new columns if missing
+        with self._connect() as conn:
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(listings)")}
+            for col, defn in [
+                ("carvana_value", "INTEGER"),
+                ("local_market_value", "INTEGER"),
+                ("blended_market_value", "INTEGER"),
+            ]:
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
         logger.debug(f"Database ready: {self.db_path}")
 
     def upsert_listing(self, scored_listing):
@@ -66,11 +79,17 @@ class Database:
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO listings
-                    (listing_id, source, title, url, asking_price, kbb_value, savings,
-                     total_score, deal_class, make, model, year, mileage, location,
-                     first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    (listing_id, source, title, url, asking_price, kbb_value,
+                     carvana_value, local_market_value, blended_market_value,
+                     savings, total_score, deal_class, make, model, year, mileage,
+                     location, first_seen, last_seen)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(listing_id) DO UPDATE SET
+                    kbb_value=excluded.kbb_value,
+                    carvana_value=excluded.carvana_value,
+                    local_market_value=excluded.local_market_value,
+                    blended_market_value=excluded.blended_market_value,
+                    savings=excluded.savings,
                     total_score=excluded.total_score,
                     deal_class=excluded.deal_class,
                     last_seen=excluded.last_seen
@@ -81,6 +100,9 @@ class Database:
                 scored_listing.url,
                 scored_listing.asking_price,
                 scored_listing.kbb_value,
+                scored_listing.carvana_value,
+                scored_listing.local_market_value,
+                scored_listing.blended_market_value,
                 scored_listing.savings_vs_kbb,
                 scored_listing.total_score,
                 scored_listing.deal_class,

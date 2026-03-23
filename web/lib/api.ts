@@ -9,6 +9,10 @@ export interface Deal {
   url: string;
   asking_price: number;
   kbb_value: number;
+  carvana_value: number | null;
+  carmax_value: number | null;
+  local_market_value: number | null;
+  blended_market_value: number | null;
   savings: number;
   total_score: number;
   deal_class: DealClass;

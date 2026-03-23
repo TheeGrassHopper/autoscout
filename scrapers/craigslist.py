@@ -189,6 +189,8 @@ class CraigslistScraper:
             params["max_auto_year"] = self.config["max_year"]
         if self.config.get("max_mileage"):
             params["auto_miles_max"] = self.config["max_mileage"]
+        if self.config.get("search_radius_miles"):
+            params["search_distance"] = self.config["search_radius_miles"]
         return f"{self.base}/search/{category}?{urlencode(params)}"
 
     def _filter(self, listings: list[RawListing]) -> list[RawListing]:

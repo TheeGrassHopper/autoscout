@@ -87,7 +87,7 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
     if SOURCES.get("craigslist"):
         scraper = CraigslistScraper(
             city=LOCATION["city"],
-            config=FILTERS,
+            config={**FILTERS, "search_radius_miles": LOCATION.get("search_radius_miles", 50)},
             vehicle_types=VEHICLE_TYPES,
         )
         cl_listings = scraper.scrape(query=query)
@@ -129,8 +129,25 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
     else:
         logger.info("STEP 1.5 — Skipping AI normalization (no ANTHROPIC_API_KEY)")
 
+    # ── Step 1.75: Build local market comps ──────────────────────────────────
+    # Group scraped listings by make+model, compute median asking price
+    # This becomes the "local market" price comp (30% weight in scoring)
+    from collections import defaultdict
+    import statistics
+    _mkt: dict = defaultdict(list)
+    for l in all_raw:
+        if l.make and l.model and l.price:
+            key = (l.make.lower(), l.model.lower())
+            _mkt[key].append(l.price)
+    local_market_comps: dict = {}
+    for key, prices in _mkt.items():
+        if len(prices) >= 2:  # Only use if we have enough comps
+            local_market_comps[key] = int(statistics.median(prices))
+            logger.info(f"Local market comp: {key[0].title()} {key[1].title()} → "
+                        f"${local_market_comps[key]:,} ({len(prices)} listings)")
+
     # ── Step 2: Price lookups ─────────────────────────────────────────────────
-    logger.info("STEP 2 — Fetching market values (KBB + Carvana + CarMax)")
+    logger.info("STEP 2 — Fetching market values (Carvana + Local Market + KBB)")
 
     pricer = KBBPricer() if PRICING_SOURCES.get("kbb") else None
     use_carvana = PRICING_SOURCES.get("carvana", False)
@@ -198,8 +215,18 @@ def run_pipeline(query: str = "", dry_run: bool = False) -> list[ScoredListing]:
             if carmax_price:
                 logger.debug(f"  CarMax: ${carmax_price:,}")
 
+        # Local market comp for this vehicle
+        local_mkt_price = None
+        if raw.make and raw.model:
+            local_mkt_price = local_market_comps.get((raw.make.lower(), raw.model.lower()))
+
         # Score (blends all available price sources)
-        scored = scorer.score(raw, price_est, carvana_price=carvana_price, carmax_price=carmax_price)
+        scored = scorer.score(
+            raw, price_est,
+            carvana_price=carvana_price,
+            carmax_price=carmax_price,
+            local_market_price=local_mkt_price,
+        )
         scored_listings.append(scored)
         db.upsert_listing(scored)
 
