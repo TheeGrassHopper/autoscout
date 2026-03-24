@@ -58,7 +58,7 @@ _API_KEY = os.getenv("AUTOSCOUT_API_KEY", "")
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
     if _API_KEY:
-        if request.method == "OPTIONS":
+        if request.method == "OPTIONS" or request.url.path == "/health":
             return await call_next(request)
         # Accept key from header OR query param (EventSource can't set headers)
         key = (
