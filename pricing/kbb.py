@@ -181,27 +181,69 @@ class KBBPricer:
 
     # ── Fallback: Depreciation Model ─────────────────────────────────────────
 
-    # Average new MSRP by category (rough approximations)
+    # Average new MSRP by category
     BASE_PRICES = {
-        ("toyota", "tacoma"): 38000,
-        ("toyota", "camry"): 27000,
-        ("toyota", "rav4"): 31000,
-        ("ford", "f-150"): 42000,
-        ("ford", "f150"): 42000,
-        ("ford", "mustang"): 35000,
+        # Toyota
+        ("toyota", "tacoma"): 42000,
+        ("toyota", "tundra"): 52000,
+        ("toyota", "4runner"): 43000,
+        ("toyota", "camry"): 28000,
+        ("toyota", "rav4"): 33000,
+        ("toyota", "highlander"): 40000,
+        ("toyota", "sienna"): 38000,
+        ("toyota", "corolla"): 23000,
+        # Ford
+        ("ford", "f-150"): 50000,
+        ("ford", "f150"): 50000,
+        ("ford", "ranger"): 36000,
+        ("ford", "explorer"): 40000,
+        ("ford", "mustang"): 38000,
+        ("ford", "bronco"): 42000,
+        ("ford", "escape"): 30000,
+        # Honda
         ("honda", "civic"): 24000,
-        ("honda", "cr-v"): 30000,
-        ("honda", "accord"): 29000,
-        ("chevrolet", "silverado"): 40000,
-        ("jeep", "wrangler"): 35000,
-        ("jeep", "grand cherokee"): 38000,
-        ("ram", "1500"): 41000,
-        ("nissan", "altima"): 25000,
-        ("bmw", "3 series"): 45000,
-        ("default", "sedan"): 26000,
-        ("default", "truck"): 38000,
-        ("default", "suv"): 32000,
-        ("default", "default"): 28000,
+        ("honda", "cr-v"): 32000,
+        ("honda", "accord"): 30000,
+        ("honda", "pilot"): 40000,
+        ("honda", "ridgeline"): 40000,
+        # Chevrolet / GMC
+        ("chevrolet", "silverado"): 48000,
+        ("chevrolet", "colorado"): 35000,
+        ("chevrolet", "tahoe"): 57000,
+        ("chevrolet", "suburban"): 60000,
+        ("chevrolet", "equinox"): 32000,
+        ("gmc", "sierra"): 48000,
+        ("gmc", "canyon"): 35000,
+        ("gmc", "yukon"): 57000,
+        # Jeep / Ram / Dodge
+        ("jeep", "wrangler"): 38000,
+        ("jeep", "grand"): 42000,
+        ("jeep", "gladiator"): 42000,
+        ("ram", "1500"): 48000,
+        ("ram", "2500"): 58000,
+        ("dodge", "ram"): 48000,
+        ("dodge", "charger"): 35000,
+        ("dodge", "challenger"): 35000,
+        # Nissan
+        ("nissan", "frontier"): 36000,
+        ("nissan", "titan"): 46000,
+        ("nissan", "altima"): 26000,
+        ("nissan", "rogue"): 30000,
+        ("nissan", "pathfinder"): 38000,
+        ("nissan", "murano"): 36000,
+        # BMW / Mercedes / Audi
+        ("bmw", "3"): 48000,
+        ("bmw", "5"): 58000,
+        ("bmw", "x5"): 62000,
+        ("mercedes-benz", "c-class"): 48000,
+        ("mercedes-benz", "e-class"): 60000,
+        ("audi", "a4"): 42000,
+        ("audi", "q5"): 52000,
+        # Defaults by category
+        ("default", "sedan"): 28000,
+        ("default", "truck"): 44000,
+        ("default", "suv"): 36000,
+        ("default", "default"): 32000,
     }
 
     def _fallback_estimate(self, year: int, make: str, model: str, mileage: int) -> PriceEstimate:
@@ -217,19 +259,27 @@ class KBBPricer:
         key = (make.lower(), model.lower().split()[0])
         base_msrp = self.BASE_PRICES.get(key, self.BASE_PRICES[("default", "default")])
 
-        # Depreciation curve
-        if age == 0:
-            retention = 0.80
-        elif age == 1:
-            retention = 0.68
+        # Depreciation curve (calibrated to 2024-2026 used market)
+        # Trucks/SUVs hold value much better than sedans post-2020
+        truck_models = {"tacoma", "tundra", "f-150", "f150", "ranger", "silverado",
+                        "sierra", "colorado", "canyon", "frontier", "titan", "ram",
+                        "ridgeline", "gladiator", "bronco", "4runner", "wrangler"}
+        is_truck = model.lower().split()[0] in truck_models
+        if age <= 1:
+            retention = 0.88 if is_truck else 0.80
         elif age == 2:
-            retention = 0.60
+            retention = 0.82 if is_truck else 0.72
         elif age == 3:
-            retention = 0.53
-        elif age <= 5:
-            retention = 0.50 - (age - 3) * 0.05
+            retention = 0.76 if is_truck else 0.65
+        elif age == 4:
+            retention = 0.70 if is_truck else 0.58
+        elif age == 5:
+            retention = 0.64 if is_truck else 0.52
+        elif age <= 8:
+            base = 0.60 if is_truck else 0.48
+            retention = base - (age - 5) * 0.05
         else:
-            retention = max(0.20, 0.40 - (age - 5) * 0.04)
+            retention = max(0.25, 0.45 - (age - 8) * 0.04)
 
         base_value = int(base_msrp * retention)
         adjusted = self._adjust_for_mileage(base_value, mileage)
