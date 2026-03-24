@@ -125,8 +125,9 @@ export interface CarvanaOfferStatus {
   steps: string[];
 }
 
-export async function startCarvanaOffer(listingId: string): Promise<void> {
-  await fetch(`${BASE}/api/deals/${listingId}/carvana-offer`, { method: "POST", headers: authHeaders() });
+export async function startCarvanaOffer(listingId: string, vin?: string): Promise<void> {
+  const params = vin ? `?vin=${encodeURIComponent(vin)}` : "";
+  await fetch(`${BASE}/api/deals/${listingId}/carvana-offer${params}`, { method: "POST", headers: authHeaders() });
 }
 
 export async function getCarvanaOfferStatus(listingId: string): Promise<CarvanaOfferStatus> {

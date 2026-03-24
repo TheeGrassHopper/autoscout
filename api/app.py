@@ -278,13 +278,13 @@ def remove_favorite(listing_id: str):
 # ── Carvana Offer Automation ──────────────────────────────────────────────────
 
 @app.post("/api/deals/{listing_id}/carvana-offer")
-def start_carvana_offer(listing_id: str, background_tasks: BackgroundTasks):
-    """Kick off the Playwright Carvana sell automation for a listing with a VIN."""
+def start_carvana_offer(listing_id: str, background_tasks: BackgroundTasks, vin: Optional[str] = None):
+    """Kick off the Playwright Carvana sell automation. Accepts optional ?vin= override."""
     listing = None
     if _db_exists():
         with _db() as conn:
             row = conn.execute(
-                "SELECT listing_id, vin, mileage, title, description FROM listings WHERE listing_id=?",
+                "SELECT listing_id, vin, mileage, title FROM listings WHERE listing_id=?",
                 (listing_id,)
             ).fetchone()
             if row:
@@ -293,15 +293,19 @@ def start_carvana_offer(listing_id: str, background_tasks: BackgroundTasks):
         _ensure_fav_schema()
         with _fav_db() as conn:
             row = conn.execute(
-                "SELECT listing_id, vin, mileage, title, description FROM favorites WHERE listing_id=?",
+                "SELECT listing_id, vin, mileage, title FROM favorites WHERE listing_id=?",
                 (listing_id,)
             ).fetchone()
             if row:
                 listing = dict(row)
     if not listing:
-        raise HTTPException(404, "Listing not found")
+        # Listing may not be in DB yet (e.g. called from favorites-only); create minimal record
+        listing = {"listing_id": listing_id, "vin": None, "mileage": 50000, "title": "", "description": ""}
+    # Manual VIN overrides stored VIN
+    if vin:
+        listing["vin"] = vin
     if not listing.get("vin"):
-        raise HTTPException(400, "No VIN available for this listing")
+        raise HTTPException(400, "No VIN available — paste a VIN in the field and try again")
 
     _offer_jobs[listing_id] = {"status": "running", "offer": None, "error": None, "steps": []}
     background_tasks.add_task(_run_carvana_offer_bg, listing_id, listing)

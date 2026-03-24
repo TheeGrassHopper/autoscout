@@ -1,8 +1,7 @@
 """
 utils/carvana_sell.py
-Playwright automation: Carvana "Sell My Car" flow to get a cash offer by VIN.
-
-Fills in all form steps based on listing data.
+Camoufox automation: Carvana "Sell My Car" flow to get a cash offer by VIN.
+Uses camoufox (Firefox-based stealth browser) to bypass Cloudflare Bot Fight Mode.
 """
 
 import asyncio
@@ -22,21 +21,26 @@ _COLOR_MAP = {
     "silver": "Silver",
     "gray": "Gray", "grey": "Gray", "charcoal": "Gray",
     "red": "Red", "maroon": "Red", "burgundy": "Red",
-    "blue": "Blue", "navy": "Blue", "cobalt": "Blue",
+    "blue": "Blue", "navy": "Blue",
     "green": "Green", "teal": "Green",
     "brown": "Brown", "bronze": "Brown",
-    "beige": "Beige/Tan", "tan": "Beige/Tan", "champagne": "Beige/Tan", "sand": "Beige/Tan",
-    "gold": "Gold", "yellow": "Yellow",
-    "orange": "Orange",
-    "purple": "Purple", "violet": "Purple",
+    "beige": "Beige/Tan", "tan": "Beige/Tan", "champagne": "Beige/Tan",
+    "gold": "Gold", "yellow": "Yellow", "orange": "Orange",
+    "purple": "Purple",
 }
 
+# Carvana color option values (from their <select> element)
+_CARVANA_COLORS = [
+    "White", "Silver", "Gray", "Black", "Blue", "Red",
+    "Brown", "Green", "Beige/Tan", "Gold", "Yellow", "Orange", "Purple",
+]
+
 _DRIVETRAIN_PATTERNS = [
-    (r'\b4wd\b|\b4x4\b|four.wheel.drive', "4 Wheel Drive"),
-    (r'\bawd\b|all.wheel.drive', "All Wheel Drive"),
-    (r'\brwd\b|rear.wheel.drive', "Rear Wheel Drive"),
-    (r'\bfwd\b|front.wheel.drive', "Front Wheel Drive"),
-    (r'\b2wd\b', "2 Wheel Drive"),
+    (r'\b4wd\b|\b4x4\b|four.wheel.drive', "4WD"),
+    (r'\bawd\b|all.wheel.drive', "AWD"),
+    (r'\brwd\b|rear.wheel.drive', "RWD"),
+    (r'\bfwd\b|front.wheel.drive', "FWD"),
+    (r'\b2wd\b', "FWD"),
 ]
 
 
@@ -59,244 +63,284 @@ def _detect_drivetrain(title: str, desc: str) -> Optional[str]:
 async def run_carvana_offer(
     vin: str,
     mileage: int,
-    title: str,
-    description: str,
+    title: str = "",
+    description: str = "",
     zip_code: str = DEFAULT_ZIP,
     email: str = DEFAULT_EMAIL,
 ) -> dict:
     """
-    Runs the Carvana sell flow and returns:
+    Runs the Carvana sell flow using camoufox and returns:
       {"offer": "$X,XXX" | None, "status": "completed"|"error", "error": str|None, "steps": [...]}
     """
-    from playwright.async_api import async_playwright, TimeoutError as PwTimeout
+    from camoufox.async_api import AsyncCamoufox
 
     color = _detect_color(title, description)
     drivetrain = _detect_drivetrain(title, description)
-
     logger.info(f"[CarvanaOffer] VIN={vin} miles={mileage} color={color} drivetrain={drivetrain}")
 
     result: dict = {"offer": None, "status": "running", "error": None, "steps": []}
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-        )
-        ctx = await browser.new_context(
-            viewport={"width": 1280, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-        )
-        page = await ctx.new_page()
+    async with AsyncCamoufox(headless=True, geoip=False) as browser:
+        page = await browser.new_page()
 
-        async def _click_text(text: str, exact=False, timeout=8000):
-            loc = page.get_by_text(text, exact=exact).first
-            await loc.wait_for(state="visible", timeout=timeout)
-            await loc.scroll_into_view_if_needed()
-            await loc.click()
+        async def _safe_click_text(text: str, exact: bool = False, timeout: int = 5000) -> bool:
+            try:
+                if exact:
+                    loc = page.get_by_text(text, exact=True).first
+                else:
+                    loc = page.get_by_text(re.compile(re.escape(text), re.I)).first
+                await loc.wait_for(state="visible", timeout=timeout)
+                await loc.scroll_into_view_if_needed()
+                await loc.click()
+                return True
+            except Exception:
+                return False
 
-        async def _click_btn(pattern: str, timeout=8000):
-            loc = page.get_by_role("button", name=re.compile(pattern, re.I)).first
-            await loc.wait_for(state="visible", timeout=timeout)
-            await loc.scroll_into_view_if_needed()
-            await loc.click()
+        async def _safe_click_btn(pattern: str, timeout: int = 5000) -> bool:
+            try:
+                loc = page.get_by_role("button", name=re.compile(pattern, re.I)).first
+                await loc.wait_for(state="visible", timeout=timeout)
+                await loc.scroll_into_view_if_needed()
+                await loc.click()
+                return True
+            except Exception:
+                return False
 
-        async def _try_click(*texts, exact=False, timeout=5000) -> bool:
-            for t in texts:
-                try:
-                    await _click_text(t, exact=exact, timeout=timeout)
-                    return True
-                except Exception:
-                    continue
-            return False
-
-        async def _advance():
-            """Try to advance to next page."""
-            for pattern in [r"continue$", r"next$", r"get my offer", r"see.+offer", r"submit"]:
-                try:
-                    await _click_btn(pattern, timeout=4000)
-                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                    await page.wait_for_timeout(1500)
-                    return True
-                except Exception:
-                    continue
-            return False
+        async def _advance() -> bool:
+            return await _safe_click_btn(r"^continue$|^next$|get my offer|see.+offer", timeout=5000)
 
         try:
-            # ── 1. Load sell page ──────────────────────────────────────────
+            # ── Step 1: Navigate to sell page ──────────────────────────────
             await page.goto(SELL_URL, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2000)
-            result["steps"].append("Loaded Carvana sell page")
+            await page.wait_for_timeout(3000)
 
-            # ── 2. Switch to VIN tab ───────────────────────────────────────
-            await _try_click("VIN", "Enter VIN", "By VIN", exact=True, timeout=6000)
-            result["steps"].append("Selected VIN tab")
-            await page.wait_for_timeout(600)
+            body = await page.inner_text("body")
+            if "security verification" in body.lower() or "cloudflare" in body.lower():
+                raise Exception("Cloudflare blocked initial page load. Try again later.")
 
-            # ── 3. Enter VIN ───────────────────────────────────────────────
-            vin_input = (
-                page.get_by_placeholder(re.compile(r"vin", re.I)).first
-                or page.locator("input[name*='vin' i]").first
-            )
-            await vin_input.wait_for(state="visible", timeout=6000)
-            await vin_input.fill(vin)
-            result["steps"].append(f"Entered VIN: {vin}")
+            result["steps"].append("Loaded sell-my-car page")
 
-            # ── 4. Enter ZIP if visible ────────────────────────────────────
+            # ── Step 2: Click VIN tab and enter VIN ─────────────────────────
+            # Try to click "Enter VIN" tab
+            for tab_text in ["VIN", "Enter VIN", "By VIN"]:
+                try:
+                    loc = page.get_by_text(tab_text, exact=True).first
+                    await loc.wait_for(state="visible", timeout=3000)
+                    await loc.click()
+                    break
+                except Exception:
+                    continue
+
+            await page.wait_for_timeout(500)
+
+            # Fill VIN field
+            for selector in ["#vin", "[name='vin']", "input[placeholder*='VIN' i]", "input[placeholder*='vin' i]"]:
+                try:
+                    await page.fill(selector, vin, timeout=5000)
+                    result["steps"].append(f"VIN entered: {vin}")
+                    break
+                except Exception:
+                    continue
+
+            await page.wait_for_timeout(500)
+
+            # Click submit button
+            for btn_pattern in [r"get your offer", r"get offer", r"^submit$", r"^search$"]:
+                if await _safe_click_btn(btn_pattern, timeout=5000):
+                    break
+
+            result["steps"].append("Submitted VIN")
+
+            # Wait for page to transition
             try:
-                zip_input = page.get_by_placeholder(re.compile(r"zip", re.I)).first
-                await zip_input.wait_for(state="visible", timeout=3000)
-                await zip_input.fill(zip_code)
-                result["steps"].append(f"Entered ZIP: {zip_code}")
+                await page.wait_for_load_state("networkidle", timeout=20000)
             except Exception:
-                pass  # ZIP field may appear later
+                pass
+            await page.wait_for_timeout(3000)
 
-            # ── 5. Submit VIN ──────────────────────────────────────────────
-            await _click_btn(r"get.+offer|check.+value", timeout=6000)
-            result["steps"].append("Clicked Get Your Offer")
-            await page.wait_for_load_state("networkidle", timeout=25000)
-            await page.wait_for_timeout(2500)
+            body = await page.inner_text("body")
+            if "security verification" in body.lower() or "cloudflare" in body.lower():
+                raise Exception("Cloudflare blocked after VIN submit. Try again later.")
 
-            # ── 6. Vehicle confirmation — click Continue ───────────────────
+            result["steps"].append(f"Vehicle page loaded: {page.url.split('?')[0].split('/')[-1]}")
+
+            # ── Step 3: Confirm vehicle if prompted ─────────────────────────
             try:
-                await _click_btn(r"^continue$", timeout=8000)
-                result["steps"].append("Confirmed vehicle, clicked Continue")
-                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                await _safe_click_btn(r"^continue$", timeout=6000)
+                result["steps"].append("Confirmed vehicle")
                 await page.wait_for_timeout(2000)
             except Exception:
-                logger.debug("No vehicle confirmation Continue button")
+                pass
 
-            # ── 7. Question loop (up to 25 pages) ─────────────────────────
-            answered: set[str] = set()
+            # ── Step 4: Answer questions in a loop ──────────────────────────
+            answered: set = set()
 
-            for attempt in range(25):
-                await page.wait_for_timeout(800)
-                body_text = await page.inner_text("body")
-                low = body_text.lower()
+            for attempt in range(30):
+                await page.wait_for_timeout(1000)
+                body = await page.inner_text("body")
+                low = body.lower()
+                url = page.url
 
-                # ── Check if offer is already on the page ──────────────────
-                offer_match = re.search(r'\$\s*[\d,]{4,}', body_text)
-                if offer_match and "offer" in low:
+                if "security verification" in low or "cloudflare" in low:
+                    raise Exception("Cloudflare blocked mid-flow.")
+
+                # Check for offer
+                offer_match = re.search(r'\$\s*[\d,]{4,}', body)
+                if offer_match and ("offer" in low or "we'll pay" in low or "carvana will" in low or "/offer" in url):
                     result["offer"] = offer_match.group(0).replace(" ", "")
-                    result["steps"].append(f"Got offer: {result['offer']}")
+                    result["steps"].append(f"Offer: {result['offer']}")
                     result["status"] = "completed"
                     break
 
                 did_answer = False
 
-                # Color
-                if "color" in low and "color" not in answered:
-                    pick = color or "Silver"
-                    for c in [pick, "Silver", "White", "Black", "Gray", "Blue", "Red"]:
-                        if await _try_click(c, exact=True, timeout=3000):
-                            answered.add("color")
-                            result["steps"].append(f"Color: {c}")
-                            did_answer = True
-                            break
+                # Color — dropdown or buttons
+                if ("color" in low or "exterior" in low) and "color" not in answered:
+                    # Try dropdown first
+                    try:
+                        select = page.locator("select").first
+                        await select.wait_for(state="visible", timeout=3000)
+                        pick = color or "Silver"
+                        # Try exact match, then fallback colors
+                        for c in [pick, "Silver", "White", "Black", "Gray", "Blue", "Red"]:
+                            try:
+                                await select.select_option(label=c, timeout=2000)
+                                answered.add("color")
+                                result["steps"].append(f"Color (dropdown): {c}")
+                                did_answer = True
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
 
-                # Drivetrain
+                    # Try buttons if dropdown didn't work
+                    if "color" not in answered:
+                        pick = color or "Silver"
+                        for c in [pick, "Silver", "White", "Black", "Gray", "Blue", "Red"]:
+                            if await _safe_click_text(c, exact=True, timeout=3000):
+                                answered.add("color")
+                                result["steps"].append(f"Color (button): {c}")
+                                did_answer = True
+                                break
+
+                # Drivetrain — buttons (FWD, AWD, RWD, 4WD)
                 elif "drivetrain" in low and "drivetrain" not in answered:
-                    dt = drivetrain or "Front Wheel Drive"
-                    for d in [dt, "Front Wheel Drive", "All Wheel Drive", "4 Wheel Drive", "Rear Wheel Drive"]:
-                        if await _try_click(d, exact=True, timeout=3000):
+                    dt = drivetrain or "FWD"
+                    for d in [dt, "FWD", "AWD", "4WD", "RWD", "Front Wheel Drive", "All Wheel Drive"]:
+                        if await _safe_click_text(d, exact=True, timeout=3000):
                             answered.add("drivetrain")
                             result["steps"].append(f"Drivetrain: {d}")
                             did_answer = True
                             break
 
-                # Modifications
+                # Modifications — click "No modifications"
                 elif "modification" in low and "modification" not in answered:
-                    if await _try_click("No", "No Modifications", exact=False, timeout=4000):
-                        answered.add("modification")
-                        result["steps"].append("No modifications")
-                        did_answer = True
+                    for opt in ["No modifications", "No Modifications", "No"]:
+                        if await _safe_click_text(opt, exact=False, timeout=4000):
+                            answered.add("modification")
+                            result["steps"].append("No modifications")
+                            did_answer = True
+                            break
 
                 # Condition
                 elif "condition" in low and "condition" not in answered:
-                    if await _try_click("Just Okay", timeout=4000):
-                        answered.add("condition")
-                        result["steps"].append("Condition: Just Okay")
-                        did_answer = True
+                    for opt in ["Just Okay", "Good", "Fair"]:
+                        if await _safe_click_text(opt, timeout=4000):
+                            answered.add("condition")
+                            result["steps"].append(f"Condition: {opt}")
+                            did_answer = True
+                            break
 
-                # Mileage input
+                # Mileage / Odometer
                 elif ("miles" in low or "mileage" in low or "odometer" in low) and "miles" not in answered:
                     try:
-                        mi_input = page.get_by_role("spinbutton").first
-                        if not await mi_input.count():
-                            mi_input = page.get_by_role("textbox").first
-                        await mi_input.wait_for(state="visible", timeout=4000)
-                        await mi_input.triple_click()
-                        await mi_input.fill(str(mileage))
-                        answered.add("miles")
-                        result["steps"].append(f"Mileage: {mileage}")
-                        did_answer = True
+                        for role in ["spinbutton", "textbox"]:
+                            try:
+                                inp = page.get_by_role(role).first
+                                await inp.wait_for(state="visible", timeout=4000)
+                                await inp.triple_click()
+                                await inp.fill(str(mileage))
+                                answered.add("miles")
+                                result["steps"].append(f"Miles: {mileage}")
+                                did_answer = True
+                                break
+                            except Exception:
+                                continue
                     except Exception:
                         pass
 
-                # Accident
+                # Accidents
                 elif "accident" in low and "accident" not in answered:
-                    if await _try_click("No Accidents", "No", exact=False, timeout=4000):
-                        answered.add("accident")
-                        result["steps"].append("No accidents")
-                        did_answer = True
+                    for opt in ["No Accidents", "No accidents", "No"]:
+                        if await _safe_click_text(opt, exact=False, timeout=4000):
+                            answered.add("accident")
+                            result["steps"].append("No accidents")
+                            did_answer = True
+                            break
 
                 # Smoked
                 elif "smoked" in low and "smoked" not in answered:
-                    if await _try_click("Not Smoked In", "No", exact=False, timeout=4000):
-                        answered.add("smoked")
-                        result["steps"].append("Not smoked in")
-                        did_answer = True
+                    for opt in ["Not Smoked In", "No"]:
+                        if await _safe_click_text(opt, exact=False, timeout=4000):
+                            answered.add("smoked")
+                            result["steps"].append("Not smoked in")
+                            did_answer = True
+                            break
 
                 # Tires
                 elif "tires" in low and "tires" not in answered:
-                    if await _try_click("None", "0", exact=True, timeout=4000):
-                        answered.add("tires")
-                        result["steps"].append("No tires replaced")
-                        did_answer = True
+                    for opt in ["None", "0"]:
+                        if await _safe_click_text(opt, exact=True, timeout=4000):
+                            answered.add("tires")
+                            result["steps"].append("No tires replaced")
+                            did_answer = True
+                            break
 
                 # Keys
                 elif "keys" in low and "key" not in answered:
-                    if await _try_click("1 Key", "1", exact=True, timeout=4000):
-                        answered.add("key")
-                        result["steps"].append("1 key")
-                        did_answer = True
+                    for opt in ["1 Key", "1"]:
+                        if await _safe_click_text(opt, exact=True, timeout=4000):
+                            answered.add("key")
+                            result["steps"].append("1 key")
+                            did_answer = True
+                            break
 
-                # ZIP / Location
-                elif ("located" in low or "zip" in low) and "location" not in answered:
+                # Location / ZIP
+                elif ("located" in low or ("zip" in low and "location" not in answered)):
                     try:
                         z = page.get_by_placeholder(re.compile(r"zip|postal", re.I)).first
                         await z.wait_for(state="visible", timeout=4000)
                         await z.triple_click()
                         await z.fill(zip_code)
                         answered.add("location")
-                        result["steps"].append(f"Location: {zip_code}")
+                        result["steps"].append(f"ZIP: {zip_code}")
                         did_answer = True
                     except Exception:
                         pass
 
                 # Loan / Lease
                 elif ("loan" in low or "lease" in low) and "loan" not in answered:
-                    if await _try_click("Neither", exact=True, timeout=4000):
-                        answered.add("loan")
-                        result["steps"].append("No loan or lease")
-                        did_answer = True
+                    for opt in ["Neither", "No loan", "No"]:
+                        if await _safe_click_text(opt, exact=True, timeout=4000):
+                            answered.add("loan")
+                            result["steps"].append("No loan/lease")
+                            did_answer = True
+                            break
 
-                # Sell or Trade
+                # Trade vs Sell
                 elif "trade" in low and "sell_trade" not in answered:
-                    if await _try_click("Sell", exact=True, timeout=4000):
-                        answered.add("sell_trade")
-                        result["steps"].append("Selling (not trading)")
-                        did_answer = True
+                    for opt in ["Sell", "Just Sell"]:
+                        if await _safe_click_text(opt, exact=True, timeout=4000):
+                            answered.add("sell_trade")
+                            result["steps"].append("Sell")
+                            did_answer = True
+                            break
 
                 # Email
                 elif "email" in low and "email" not in answered:
                     try:
                         em = page.get_by_placeholder(re.compile(r"email", re.I)).first
-                        if not await em.count():
-                            em = page.get_by_role("textbox", name=re.compile(r"email", re.I)).first
                         await em.wait_for(state="visible", timeout=4000)
                         await em.fill(email)
                         answered.add("email")
@@ -305,35 +349,27 @@ async def run_carvana_offer(
                     except Exception:
                         pass
 
-                # Advance to next page
-                advanced = await _advance()
-                if not advanced and not did_answer:
-                    logger.warning(f"[CarvanaOffer] Stuck on attempt {attempt} — page content snippet: {body_text[:200]}")
-                    if attempt >= 3:
-                        break
+                # Always try to advance
+                await _advance()
 
-            # Final offer check if loop didn't catch it
+                if not did_answer and attempt >= 5:
+                    logger.debug(f"[CarvanaOffer] No answer on attempt {attempt}, URL: {url}")
+
+            # Final offer check
             if result["status"] != "completed":
-                body_text = await page.inner_text("body")
-                offer_match = re.search(r'\$\s*[\d,]{4,}', body_text)
-                if offer_match:
-                    result["offer"] = offer_match.group(0).replace(" ", "")
+                body = await page.inner_text("body")
+                m = re.search(r'\$\s*[\d,]{4,}', body)
+                if m and ("offer" in body.lower() or "we'll pay" in body.lower()):
+                    result["offer"] = m.group(0).replace(" ", "")
                     result["status"] = "completed"
-                    result["steps"].append(f"Final offer found: {result['offer']}")
                 else:
                     result["status"] = "error"
-                    result["error"] = "Could not retrieve offer — Carvana may have changed their flow or blocked automation."
+                    result["error"] = "Could not retrieve offer — Carvana may have changed their flow."
 
-        except PwTimeout as e:
-            result["status"] = "error"
-            result["error"] = f"Timed out: {e}"
-            logger.error(f"[CarvanaOffer] Timeout: {e}")
         except Exception as e:
             result["status"] = "error"
             result["error"] = str(e)
             logger.error(f"[CarvanaOffer] Error: {e}", exc_info=True)
-        finally:
-            await browser.close()
 
     logger.info(f"[CarvanaOffer] Done: status={result['status']} offer={result['offer']}")
     return result
