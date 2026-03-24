@@ -74,7 +74,12 @@ function PipelinePanel() {
 
   useEffect(() => {
     if (!status.running) return;
-    const es = new EventSource("http://localhost:8000/api/pipeline/logs");
+    const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+    const apiKey = process.env.NEXT_PUBLIC_API_KEY ?? "";
+    const logsUrl = apiKey
+      ? `${base}/api/pipeline/logs?api_key=${encodeURIComponent(apiKey)}`
+      : `${base}/api/pipeline/logs`;
+    const es = new EventSource(logsUrl);
     es.onmessage = (e) => {
       const data = JSON.parse(e.data);
       if (data.line) setLogs((prev) => [...prev.slice(-199), data.line]);

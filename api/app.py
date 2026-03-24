@@ -28,9 +28,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # ── Path setup (so we can import from the project root) ──────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -42,13 +42,32 @@ from config import (FILTERS, LOCATION, MESSAGING, NOTIFICATIONS,
 
 app = FastAPI(title="AutoScout AI", version="1.0")
 
+# ── CORS ─────────────────────────────────────────────────────────────────────
+_ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],   # Railway frontend origin set via env
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── API Key auth (optional — set AUTOSCOUT_API_KEY env var to enable) ─────────
+_API_KEY = os.getenv("AUTOSCOUT_API_KEY", "")
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    if _API_KEY:
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        # Accept key from header OR query param (EventSource can't set headers)
+        key = (
+            request.headers.get("X-API-Key", "")
+            or request.query_params.get("api_key", "")
+        )
+        if key != _API_KEY:
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    return await call_next(request)
 
 DB_PATH = OUTPUT.get("db_path", "output/autoscout.db")
 FAV_DB_PATH = "output/favorites.db"

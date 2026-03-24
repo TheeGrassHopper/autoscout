@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+output/autoscout.db
+output/autoscout.log
+output/.price_cache/
+web/
+.git/
+*.md

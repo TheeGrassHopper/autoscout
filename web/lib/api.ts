@@ -1,4 +1,9 @@
-const BASE = "http://localhost:8000";
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+
+function authHeaders(): HeadersInit {
+  return API_KEY ? { "X-API-Key": API_KEY } : {};
+}
 
 export type DealClass = "great" | "fair" | "poor";
 
@@ -68,54 +73,54 @@ export interface PipelineStatus {
 }
 
 export async function getStats(): Promise<Stats> {
-  const res = await fetch(`${BASE}/api/stats`, { cache: "no-store" });
+  const res = await fetch(`${BASE}/api/stats`, { cache: "no-store", headers: authHeaders() });
   return res.json();
 }
 
 export async function getDeals(dealClass?: string): Promise<Deal[]> {
   const params = dealClass ? `?deal_class=${dealClass}` : "";
-  const res = await fetch(`${BASE}/api/deals${params}`, { cache: "no-store" });
+  const res = await fetch(`${BASE}/api/deals${params}`, { cache: "no-store", headers: authHeaders() });
   return res.json();
 }
 
 export async function getMessageQueue(): Promise<QueuedMessage[]> {
-  const res = await fetch(`${BASE}/api/messages/queue`, { cache: "no-store" });
+  const res = await fetch(`${BASE}/api/messages/queue`, { cache: "no-store", headers: authHeaders() });
   return res.json();
 }
 
 export async function approveMessage(id: number): Promise<void> {
-  await fetch(`${BASE}/api/messages/${id}/approve`, { method: "POST" });
+  await fetch(`${BASE}/api/messages/${id}/approve`, { method: "POST", headers: authHeaders() });
 }
 
 export async function skipMessage(id: number): Promise<void> {
-  await fetch(`${BASE}/api/messages/${id}/skip`, { method: "POST" });
+  await fetch(`${BASE}/api/messages/${id}/skip`, { method: "POST", headers: authHeaders() });
 }
 
 export async function getPipelineStatus(): Promise<PipelineStatus> {
-  const res = await fetch(`${BASE}/api/pipeline/status`, { cache: "no-store" });
+  const res = await fetch(`${BASE}/api/pipeline/status`, { cache: "no-store", headers: authHeaders() });
   return res.json();
 }
 
 export async function getFavorites(): Promise<Deal[]> {
-  const res = await fetch(`${BASE}/api/favorites`, { cache: "no-store" });
+  const res = await fetch(`${BASE}/api/favorites`, { cache: "no-store", headers: authHeaders() });
   return res.json();
 }
 
 export async function saveFavorite(listingId: string): Promise<void> {
-  await fetch(`${BASE}/api/favorites/${listingId}`, { method: "POST" });
+  await fetch(`${BASE}/api/favorites/${listingId}`, { method: "POST", headers: authHeaders() });
 }
 
 export async function removeFavorite(listingId: string): Promise<void> {
-  await fetch(`${BASE}/api/favorites/${listingId}`, { method: "DELETE" });
+  await fetch(`${BASE}/api/favorites/${listingId}`, { method: "DELETE", headers: authHeaders() });
 }
 
 export async function resetDatabase(): Promise<void> {
-  await fetch(`${BASE}/api/database`, { method: "DELETE" });
+  await fetch(`${BASE}/api/database`, { method: "DELETE", headers: authHeaders() });
 }
 
 export async function runPipeline(query = "", dryRun = true, zipCode = "", radiusMiles = 0): Promise<void> {
   const params = new URLSearchParams({ query, dry_run: String(dryRun) });
   if (zipCode) params.set("zip_code", zipCode);
   if (radiusMiles) params.set("radius_miles", String(radiusMiles));
-  await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST" });
+  await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST", headers: authHeaders() });
 }
