@@ -69,6 +69,11 @@ async def api_key_middleware(request: Request, call_next):
             return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 DB_PATH = OUTPUT.get("db_path", "output/autoscout.db")
 FAV_DB_PATH = "output/favorites.db"
 

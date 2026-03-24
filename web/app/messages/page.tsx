@@ -137,12 +137,12 @@ export default function MessagesPage() {
 
   const handleApprove = async (id: number) => {
     await approveMessage(id);
-    setDismissed((prev) => new Set([...prev, id]));
+    setDismissed((prev) => new Set(Array.from(prev).concat(id)));
   };
 
   const handleSkip = async (id: number) => {
     await skipMessage(id);
-    setDismissed((prev) => new Set([...prev, id]));
+    setDismissed((prev) => new Set(Array.from(prev).concat(id)));
   };
 
   const visible = messages.filter((m) => !dismissed.has(m.id));
