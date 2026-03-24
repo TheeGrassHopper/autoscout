@@ -77,6 +77,10 @@ def health():
 DB_PATH = OUTPUT.get("db_path", "output/autoscout.db")
 FAV_DB_PATH = "output/favorites.db"
 
+# ── Carvana offer job state ───────────────────────────────────────────────────
+# listing_id -> {"status": "running"|"completed"|"error", "offer": str|None, ...}
+_offer_jobs: dict = {}
+
 # ── Pipeline state ────────────────────────────────────────────────────────────
 
 _pipeline = {
@@ -269,6 +273,59 @@ def remove_favorite(listing_id: str):
     with _fav_db() as conn:
         conn.execute("DELETE FROM favorites WHERE listing_id=?", (listing_id,))
     return {"status": "removed", "listing_id": listing_id}
+
+
+# ── Carvana Offer Automation ──────────────────────────────────────────────────
+
+@app.post("/api/deals/{listing_id}/carvana-offer")
+def start_carvana_offer(listing_id: str, background_tasks: BackgroundTasks):
+    """Kick off the Playwright Carvana sell automation for a listing with a VIN."""
+    listing = None
+    if _db_exists():
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT listing_id, vin, mileage, title, description FROM listings WHERE listing_id=?",
+                (listing_id,)
+            ).fetchone()
+            if row:
+                listing = dict(row)
+    if not listing:
+        _ensure_fav_schema()
+        with _fav_db() as conn:
+            row = conn.execute(
+                "SELECT listing_id, vin, mileage, title, description FROM favorites WHERE listing_id=?",
+                (listing_id,)
+            ).fetchone()
+            if row:
+                listing = dict(row)
+    if not listing:
+        raise HTTPException(404, "Listing not found")
+    if not listing.get("vin"):
+        raise HTTPException(400, "No VIN available for this listing")
+
+    _offer_jobs[listing_id] = {"status": "running", "offer": None, "error": None, "steps": []}
+    background_tasks.add_task(_run_carvana_offer_bg, listing_id, listing)
+    return {"status": "started"}
+
+
+@app.get("/api/deals/{listing_id}/carvana-offer")
+def get_carvana_offer_status(listing_id: str):
+    return _offer_jobs.get(listing_id, {"status": "not_started"})
+
+
+def _run_carvana_offer_bg(listing_id: str, listing: dict):
+    import asyncio as _aio
+    from utils.carvana_sell import run_carvana_offer
+    try:
+        result = _aio.run(run_carvana_offer(
+            vin=listing["vin"],
+            mileage=int(listing.get("mileage") or 50000),
+            title=listing.get("title", ""),
+            description=listing.get("description", "") or "",
+        ))
+        _offer_jobs[listing_id].update(result)
+    except Exception as e:
+        _offer_jobs[listing_id].update({"status": "error", "error": str(e)})
 
 
 # ── Messages ──────────────────────────────────────────────────────────────────

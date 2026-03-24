@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { type Deal, type DealClass, getDeals, getFavorites, saveFavorite, removeFavorite } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { type Deal, type DealClass, type CarvanaOfferStatus, getDeals, getFavorites, saveFavorite, removeFavorite, startCarvanaOffer, getCarvanaOfferStatus } from "@/lib/api";
 
 const FILTERS: { label: string; value: string }[] = [
   { label: "All", value: "" },
@@ -109,6 +109,84 @@ function StarButton({ listingId, isSaved, onToggle }: {
 
 // ── Deal Drawer (side panel on desktop, bottom sheet on mobile) ───────────────
 
+function CarvanaOfferButton({ deal }: { deal: Deal }) {
+  const [job, setJob] = useState<CarvanaOfferStatus>({ status: "not_started", offer: null, error: null, steps: [] });
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    // Fetch existing job status on mount
+    getCarvanaOfferStatus(deal.listing_id).then(setJob);
+  }, [deal.listing_id]);
+
+  useEffect(() => {
+    if (job.status === "running") {
+      pollRef.current = setInterval(async () => {
+        const s = await getCarvanaOfferStatus(deal.listing_id);
+        setJob(s);
+        if (s.status !== "running") clearInterval(pollRef.current!);
+      }, 3000);
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [job.status, deal.listing_id]);
+
+  const start = async () => {
+    setJob({ status: "running", offer: null, error: null, steps: [] });
+    await startCarvanaOffer(deal.listing_id);
+  };
+
+  if (job.status === "completed" && job.offer) {
+    return (
+      <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-4 space-y-2">
+        <div className="flex items-center gap-2 text-emerald-700 font-semibold">
+          <span>✅</span>
+          <span>Carvana Cash Offer</span>
+        </div>
+        <div className="text-3xl font-bold text-emerald-700">{job.offer}</div>
+        <div className="text-xs text-emerald-600">Offer retrieved automatically via Carvana's sell flow</div>
+        <button onClick={start} className="text-xs text-emerald-600 underline hover:text-emerald-800">Refresh offer</button>
+      </div>
+    );
+  }
+
+  if (job.status === "error") {
+    return (
+      <div className="rounded-lg bg-red-50 border border-red-200 p-3 space-y-2">
+        <div className="text-sm text-red-700 font-medium">Automation error</div>
+        <div className="text-xs text-red-500">{job.error}</div>
+        <button onClick={start} className="px-3 py-1.5 bg-red-600 text-white text-xs font-semibold rounded hover:bg-red-700">
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
+  if (job.status === "running") {
+    return (
+      <div className="rounded-lg bg-blue-50 border border-blue-200 p-4 space-y-2">
+        <div className="flex items-center gap-2 text-blue-700 font-semibold text-sm">
+          <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+          </svg>
+          Getting Carvana offer…
+        </div>
+        {job.steps.length > 0 && (
+          <div className="text-xs text-blue-500 font-mono">{job.steps[job.steps.length - 1]}</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={start}
+      className="w-full flex items-center justify-center gap-2 py-2.5 bg-[#00aed9] text-white text-sm font-semibold rounded-lg hover:opacity-90 active:opacity-80 transition-opacity"
+    >
+      🤖 Get Carvana Cash Offer (Auto-fill)
+    </button>
+  );
+}
+
 function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
   const savings = deal.savings ?? (deal.kbb_value ? deal.kbb_value - deal.asking_price : null);
 
@@ -204,14 +282,15 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
 
         {/* VIN block */}
         {deal.vin && (
-          <div className="rounded-lg bg-slate-50 border border-slate-200 p-4 space-y-2">
-            <div className="text-xs text-slate-500 font-medium uppercase tracking-wide">VIN</div>
-            <div className="font-mono text-slate-900 font-bold tracking-widest text-sm break-all">{deal.vin}</div>
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-4 space-y-3">
+            <div>
+              <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">VIN</div>
+              <div className="font-mono text-slate-900 font-bold tracking-widest text-sm break-all">{deal.vin}</div>
+            </div>
+            {/* Automated Carvana offer */}
+            <CarvanaOfferButton deal={deal} />
+            {/* Manual links */}
             <div className="flex flex-wrap gap-2">
-              <a href={`https://www.carvana.com/sell-my-car/${deal.vin}`} target="_blank" rel="noopener noreferrer"
-                className="px-3 py-1.5 bg-[#00aed9] text-white text-xs font-semibold rounded hover:opacity-90">
-                Carvana Offer ↗
-              </a>
               <a href={`https://www.carmax.com/car-value/vin/${deal.vin}`} target="_blank" rel="noopener noreferrer"
                 className="px-3 py-1.5 bg-[#e31837] text-white text-xs font-semibold rounded hover:opacity-90">
                 CarMax Offer ↗

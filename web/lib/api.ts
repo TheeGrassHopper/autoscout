@@ -118,6 +118,22 @@ export async function resetDatabase(): Promise<void> {
   await fetch(`${BASE}/api/database`, { method: "DELETE", headers: authHeaders() });
 }
 
+export interface CarvanaOfferStatus {
+  status: "not_started" | "running" | "completed" | "error";
+  offer: string | null;
+  error: string | null;
+  steps: string[];
+}
+
+export async function startCarvanaOffer(listingId: string): Promise<void> {
+  await fetch(`${BASE}/api/deals/${listingId}/carvana-offer`, { method: "POST", headers: authHeaders() });
+}
+
+export async function getCarvanaOfferStatus(listingId: string): Promise<CarvanaOfferStatus> {
+  const res = await fetch(`${BASE}/api/deals/${listingId}/carvana-offer`, { cache: "no-store", headers: authHeaders() });
+  return res.json();
+}
+
 export async function runPipeline(query = "", dryRun = true, zipCode = "", radiusMiles = 0): Promise<void> {
   const params = new URLSearchParams({ query, dry_run: String(dryRun) });
   if (zipCode) params.set("zip_code", zipCode);
