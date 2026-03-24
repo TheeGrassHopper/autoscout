@@ -19,4 +19,4 @@ RUN mkdir -p output
 # Railway sets PORT env var
 ENV PORT=8000
 
-CMD uvicorn api.app:app --host 0.0.0.0 --port ${PORT}
+CMD ["sh", "-c", "uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
