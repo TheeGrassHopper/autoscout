@@ -7,7 +7,7 @@ Edit this file to define what vehicles you're hunting for.
 LOCATION = {
     "city": "phoenix",          # Craigslist city subdomain (phoenix.craigslist.org)
     "zip_code": "85001",
-    "search_radius_miles": 50,
+    "search_radius_miles": 500,
 }
 
 # ── VEHICLE FILTERS ─────────────────────────────────────────────────────────
