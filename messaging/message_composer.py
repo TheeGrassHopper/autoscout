@@ -74,7 +74,7 @@ Tone instruction: {tone_instruction}"""
     try:
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5-20251001",
             max_tokens=300,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
