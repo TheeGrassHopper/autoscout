@@ -38,6 +38,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (FILTERS, LOCATION, MESSAGING, NOTIFICATIONS,
                     OUTPUT, PRICING_SOURCES, SCORING, SOURCES)
 
+# ── Logging setup (configure before any routes run) ───────────────────────────
+os.makedirs("output", exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-7s  %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("output/autoscout.log", encoding="utf-8"),
+    ],
+    force=True,  # override any root handler set earlier
+)
+logger = logging.getLogger("autoscout.api")
+logger.info("AutoScout API starting up")
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="AutoScout AI", version="1.0")
@@ -68,6 +83,21 @@ async def api_key_middleware(request: Request, call_next):
         if key != _API_KEY:
             return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
+
+
+# ── Global exception handler ──────────────────────────────────────────────────
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        "Unhandled exception on %s %s — %s",
+        request.method, request.url.path, exc,
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "error": str(exc)},
+    )
 
 
 @app.get("/health")
