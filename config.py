@@ -23,11 +23,11 @@ SEARCH_QUERIES = [
 ]
 
 FILTERS = {
-    "min_year": 2018,
+    "min_year": 2009,
     "max_year": 2025,
     "max_price": 40000,         # USD
-    "min_price": 3000,          # Avoid junk listings
-    "max_mileage": 100000,
+    "min_price": 2000,          # Avoid junk listings
+    "max_mileage": 190000,
     "min_mileage": 0,
     "exclude_salvage": True,    # Skip salvage/rebuilt titles
 }
