@@ -60,6 +60,227 @@ def _detect_drivetrain(title: str, desc: str) -> Optional[str]:
     return None
 
 
+async def _fill_build_page(page, color: str | None, drivetrain: str | None, result: dict,
+                           transmission: str | None = None):
+    """
+    Fill the Carvana /build page which shows all vehicle-build questions at once:
+      - Exterior color  (role=combobox custom dropdown — must click to open, then pick option)
+      - Drivetrain      (tile buttons: 4WD / RWD / AWD / FWD)
+      - Transmission    (tile buttons: Automatic / Manual)
+      - Modifications   (tile buttons: No modifications / Modifications)
+      - Features        (checkboxes — all optional, skip)
+    Then clicks Continue.
+    transmission: NHTSA-decoded label e.g. "Automatic, 6-Spd" (used as first candidate).
+    """
+    await page.wait_for_timeout(800)
+
+    # ── Color: role=combobox, must click to open then pick ─────────────
+    try:
+        combobox = page.locator("[role='combobox']").first
+        await combobox.wait_for(state="visible", timeout=5000)
+        await combobox.click()
+        await page.wait_for_timeout(600)
+        # Pick color from the open dropdown list
+        pick = color or "Silver"
+        picked = False
+        for c in [pick, "Silver", "White", "Black", "Gray", "Blue", "Red"]:
+            try:
+                opt = page.get_by_role("option", name=c).first
+                await opt.wait_for(state="visible", timeout=2000)
+                await opt.click()
+                result["steps"].append(f"Color: {c}")
+                picked = True
+                break
+            except Exception:
+                # fallback: click visible text inside the open dropdown
+                try:
+                    opt = page.locator(f"[role='listbox'] >> text='{c}'").first
+                    await opt.wait_for(state="visible", timeout=1500)
+                    await opt.click()
+                    result["steps"].append(f"Color: {c}")
+                    picked = True
+                    break
+                except Exception:
+                    continue
+        if not picked:
+            logger.warning("[CarvanaOffer] Could not pick color from combobox")
+            # Close the dropdown by pressing Escape
+            await page.keyboard.press("Escape")
+    except Exception as e:
+        logger.warning(f"[CarvanaOffer] Color combobox error: {e}")
+
+    await page.wait_for_timeout(400)
+
+    # ── Drivetrain tile ─────────────────────────────────────────────────
+    dt = drivetrain or "4WD"
+    for d in [dt, "4WD", "AWD", "FWD", "RWD"]:
+        try:
+            tile = page.locator(f"[data-testid='tile-{d}']").first
+            await tile.wait_for(state="visible", timeout=2000)
+            # Only click if not already active
+            cls = await tile.get_attribute("class") or ""
+            if "active" not in cls:
+                await tile.click()
+            result["steps"].append(f"Drivetrain: {d}")
+            break
+        except Exception:
+            continue
+
+    await page.wait_for_timeout(300)
+
+    # ── Transmission tile ───────────────────────────────────────────────
+    # NHTSA-decoded value is tried first (exact match), then fallbacks
+    _trans_candidates = list(dict.fromkeys(filter(None, [
+        transmission,
+        "Automatic", "Automatic, 6-Spd", "Automatic, 8-Spd", "Automatic, 10-Spd",
+    ])))
+    for t in _trans_candidates:
+        try:
+            tile = page.get_by_role("button", name=t).first
+            await tile.wait_for(state="visible", timeout=2000)
+            cls = await tile.get_attribute("class") or ""
+            if "active" not in cls:
+                await tile.click()
+            result["steps"].append(f"Transmission: {t}")
+            break
+        except Exception:
+            continue
+
+    await page.wait_for_timeout(300)
+
+    # ── Modifications: No modifications ────────────────────────────────
+    for opt in ["No modifications", "No Modifications"]:
+        try:
+            tile = page.get_by_role("button", name=opt).first
+            await tile.wait_for(state="visible", timeout=3000)
+            cls = await tile.get_attribute("class") or ""
+            if "active" not in cls:
+                await tile.click()
+            result["steps"].append("No modifications")
+            break
+        except Exception:
+            continue
+
+    await page.wait_for_timeout(400)
+
+    # ── Continue ────────────────────────────────────────────────────────
+    try:
+        btn = page.get_by_role("button", name="Continue").first
+        await btn.wait_for(state="visible", timeout=5000)
+        await btn.click()
+        result["steps"].append("Build page submitted")
+        logger.info("[CarvanaOffer] /build page filled and submitted")
+    except Exception as e:
+        logger.warning(f"[CarvanaOffer] Could not click Continue on /build: {e}")
+
+
+async def _fill_conditionux_page(page, result: dict):
+    """
+    Fill the Carvana /conditionux page which shows all 9 vehicle-condition questions at once.
+    We click the best (no-damage / like-new) option for each required question, then Continue.
+    """
+    await page.wait_for_timeout(800)
+
+    # Helper: click the first matching visible element from a list of candidate labels.
+    # Carvana uses both <button> elements and styled <div>/<span> tiles — try both.
+    async def _click_one(candidates: list[str]) -> str | None:
+        for label in candidates:
+            # 1st try: role=button (for tile buttons with ARIA role)
+            try:
+                btn = page.get_by_role("button", name=re.compile(re.escape(label), re.I)).first
+                await btn.wait_for(state="visible", timeout=1500)
+                await btn.scroll_into_view_if_needed()
+                cls = await btn.get_attribute("class") or ""
+                if "active" not in cls:
+                    await btn.click()
+                return label
+            except Exception:
+                pass
+            # 2nd try: get_by_text for div/span/label tiles (no ARIA button role)
+            try:
+                el = page.get_by_text(re.compile(r"^\s*" + re.escape(label) + r"\s*$", re.I)).first
+                await el.wait_for(state="visible", timeout=1500)
+                await el.scroll_into_view_if_needed()
+                await el.click()
+                return label
+            except Exception:
+                continue
+        return None
+
+    # 1. Exterior damage
+    label = await _click_one(["No exterior damage"])
+    if label:
+        result["steps"].append("No exterior damage")
+
+    await page.wait_for_timeout(200)
+
+    # 2. Windshield
+    label = await _click_one(["No windshield damage"])
+    if label:
+        result["steps"].append("No windshield damage")
+
+    await page.wait_for_timeout(200)
+
+    # 3. Moonroof / sunroof
+    label = await _click_one(["No moonroof", "Works great"])
+    if label:
+        result["steps"].append(f"Moonroof: {label}")
+
+    await page.wait_for_timeout(200)
+
+    # 4. Interior damage
+    label = await _click_one(["No interior damage", "No damage"])
+    if label:
+        result["steps"].append(f"Interior: {label}")
+
+    await page.wait_for_timeout(200)
+
+    # 5. Technology system issues
+    label = await _click_one(["No technology system issues", "No tech issues"])
+    if label:
+        result["steps"].append(f"Tech: {label}")
+
+    await page.wait_for_timeout(200)
+
+    # 6. Engine issues
+    label = await _click_one(["No engine issues", "No issues"])
+    if label:
+        result["steps"].append(f"Engine: {label}")
+
+    await page.wait_for_timeout(200)
+
+    # 7. Mechanical or electrical issues
+    label = await _click_one(["No mechanical or electrical issues"])
+    if label:
+        result["steps"].append(f"Mechanical/electrical: {label}")
+
+    await page.wait_for_timeout(200)
+
+    # 8. Drivable
+    label = await _click_one(["Drivable"])
+    if label:
+        result["steps"].append("Drivable")
+
+    await page.wait_for_timeout(200)
+
+    # 9. Overall condition summary (always last on the page)
+    label = await _click_one(["Like new", "Pretty great"])
+    if label:
+        result["steps"].append(f"Condition: {label}")
+
+    await page.wait_for_timeout(400)
+
+    # Continue
+    try:
+        btn = page.get_by_role("button", name=re.compile(r"^continue$", re.I)).first
+        await btn.wait_for(state="visible", timeout=5000)
+        await btn.click()
+        result["steps"].append("Conditionux page submitted")
+        logger.info("[CarvanaOffer] /conditionux page filled and submitted")
+    except Exception as e:
+        logger.warning(f"[CarvanaOffer] Could not click Continue on /conditionux: {e}")
+
+
 async def run_carvana_offer(
     vin: str,
     mileage: int,
@@ -73,15 +294,52 @@ async def run_carvana_offer(
       {"offer": "$X,XXX" | None, "status": "completed"|"error", "error": str|None, "steps": [...]}
     """
     from camoufox.async_api import AsyncCamoufox
+    from utils.vin_decode import decode_vin
 
+    # Decode VIN via NHTSA for authoritative drivetrain/transmission
+    vin_data = decode_vin(vin)
     color = _detect_color(title, description)
-    drivetrain = _detect_drivetrain(title, description)
-    logger.info(f"[CarvanaOffer] VIN={vin} miles={mileage} color={color} drivetrain={drivetrain}")
+    # Prefer NHTSA drivetrain over regex-from-title
+    drivetrain = vin_data.get("drive_type") or _detect_drivetrain(title, description)
+    transmission = vin_data.get("transmission")
+    logger.info(
+        f"[CarvanaOffer] VIN={vin} miles={mileage} color={color} "
+        f"drivetrain={drivetrain} transmission={transmission} "
+        f"(NHTSA: {vin_data.get('year')} {vin_data.get('make')} {vin_data.get('model')})"
+    )
 
     result: dict = {"offer": None, "status": "running", "error": None, "steps": []}
 
     async with AsyncCamoufox(headless=True, geoip=False) as browser:
         page = await browser.new_page()
+
+        # ── Intercept Carvana's internal offer API response ─────────────
+        # Carvana posts to an internal endpoint that returns the cash offer.
+        # Capturing it here is more reliable than parsing the final HTML.
+        _intercepted_offer: list[str] = []  # mutable so closure can write
+
+        async def _on_response(response):
+            try:
+                url = response.url
+                # Carvana's offer API paths observed: /offer, /appraisal, /instant-offer
+                if any(kw in url for kw in ["/offer", "/appraisal", "/instant-offer", "/getoffer"]):
+                    if response.status == 200:
+                        try:
+                            data = await response.json()
+                        except Exception:
+                            return
+                        # Look for a dollar amount in the JSON
+                        text = str(data)
+                        m = re.search(r'\b(\d{4,6})\b', text)
+                        if m:
+                            val = int(m.group(1))
+                            if 500 <= val <= 200000:
+                                _intercepted_offer.append(f"${val:,}")
+                                logger.info(f"[CarvanaOffer] Intercepted offer via API: ${val:,} from {url}")
+            except Exception:
+                pass
+
+        page.on("response", _on_response)
 
         async def _safe_click_text(text: str, exact: bool = False, timeout: int = 5000) -> bool:
             try:
@@ -121,26 +379,70 @@ async def run_carvana_offer(
             result["steps"].append("Loaded sell-my-car page")
 
             # ── Step 2: Click VIN tab and enter VIN ─────────────────────────
-            # Try to click "Enter VIN" tab
-            for tab_text in ["VIN", "Enter VIN", "By VIN"]:
-                try:
-                    loc = page.get_by_text(tab_text, exact=True).first
-                    await loc.wait_for(state="visible", timeout=3000)
-                    await loc.click()
-                    break
-                except Exception:
-                    continue
+            # The VIN input (#vin) is visible by default on Carvana's sell page.
+            # Only click the VIN tab if the input is currently hidden (i.e. the
+            # License Plate tab is active instead). Clicking an already-active tab
+            # toggles it off and hides the input.
+            try:
+                vin_already_visible = await page.locator("#vin").first.is_visible()
+            except Exception:
+                vin_already_visible = False
 
-            await page.wait_for_timeout(500)
+            if not vin_already_visible:
+                for tab_text in ["VIN", "Enter VIN", "By VIN"]:
+                    try:
+                        # Use [role='tab'] to avoid matching the hidden label element
+                        loc = page.locator("[role='tab']").get_by_text(tab_text).first
+                        await loc.wait_for(state="visible", timeout=3000)
+                        await loc.click()
+                        break
+                    except Exception:
+                        continue
+                # Wait for VIN input to appear after tab switch
+                try:
+                    await page.locator("#vin").first.wait_for(state="visible", timeout=5000)
+                except Exception:
+                    await page.wait_for_timeout(1000)
 
             # Fill VIN field
-            for selector in ["#vin", "[name='vin']", "input[placeholder*='VIN' i]", "input[placeholder*='vin' i]"]:
+            vin_filled = False
+            for selector in ["#vin", "input[label='VIN' i]", "input[type='text']:visible"]:
                 try:
-                    await page.fill(selector, vin, timeout=5000)
-                    result["steps"].append(f"VIN entered: {vin}")
-                    break
+                    inp = page.locator(selector).first
+                    await inp.wait_for(state="visible", timeout=3000)
+                    await inp.click()
+                    await page.wait_for_timeout(150)
+                    await inp.fill(vin)
+                    val = await inp.input_value()
+                    if val.strip().upper() == vin.strip().upper():
+                        result["steps"].append(f"VIN entered: {vin}")
+                        vin_filled = True
+                        break
                 except Exception:
                     continue
+
+            if not vin_filled:
+                # Last resort: JavaScript direct set + React synthetic event
+                try:
+                    await page.evaluate(f"""
+                        const inp = document.querySelector('#vin');
+                        if (inp) {{
+                            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                                window.HTMLInputElement.prototype, 'value').set;
+                            nativeInputValueSetter.call(inp, '{vin}');
+                            inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+                    """)
+                    await page.wait_for_timeout(300)
+                    val = await page.locator("#vin").first.input_value()
+                    if val.strip().upper() == vin.strip().upper():
+                        result["steps"].append(f"VIN entered (JS): {vin}")
+                        vin_filled = True
+                    else:
+                        logger.warning(f"[CarvanaOffer] JS VIN set failed, value={val!r}")
+                except Exception as e:
+                    logger.warning(f"[CarvanaOffer] JS VIN fallback error: {e}")
 
             await page.wait_for_timeout(500)
 
@@ -172,7 +474,14 @@ async def run_carvana_offer(
             except Exception:
                 pass
 
-            # ── Step 4: Answer questions in a loop ──────────────────────────
+            # ── Step 4: /build page — all vehicle-build questions on one page ──
+            # Carvana shows color (combobox), drivetrain tiles, transmission tiles,
+            # optional features (checkboxes), and modifications on a single /build page.
+            if "/build" in page.url:
+                await _fill_build_page(page, color, drivetrain, result, transmission=transmission)
+                await page.wait_for_timeout(2000)
+
+            # ── Step 5: Answer subsequent questions in a loop ────────────────
             answered: set = set()
 
             for attempt in range(30):
@@ -184,7 +493,14 @@ async def run_carvana_offer(
                 if "security verification" in low or "cloudflare" in low:
                     raise Exception("Cloudflare blocked mid-flow.")
 
-                # Check for offer
+                # Check intercepted API offer first (most reliable)
+                if _intercepted_offer:
+                    result["offer"] = _intercepted_offer[-1]
+                    result["steps"].append(f"Offer (API): {result['offer']}")
+                    result["status"] = "completed"
+                    break
+
+                # Fallback: check page body for offer text
                 offer_match = re.search(r'\$\s*[\d,]{4,}', body)
                 if offer_match and ("offer" in low or "we'll pay" in low or "carvana will" in low or "/offer" in url):
                     result["offer"] = offer_match.group(0).replace(" ", "")
@@ -192,59 +508,24 @@ async def run_carvana_offer(
                     result["status"] = "completed"
                     break
 
+                # If we land back on /build (e.g. validation failed), retry
+                if "/build" in url and "build" not in answered:
+                    await _fill_build_page(page, color, drivetrain, result, transmission=transmission)
+                    answered.add("build")
+                    await page.wait_for_timeout(1500)
+                    continue
+
+                # /conditionux — single page with all 9 condition questions
+                if "conditionux" in url and "conditionux" not in answered:
+                    await _fill_conditionux_page(page, result)
+                    answered.add("conditionux")
+                    await page.wait_for_timeout(2000)
+                    continue
+
                 did_answer = False
 
-                # Color — dropdown or buttons
-                if ("color" in low or "exterior" in low) and "color" not in answered:
-                    # Try dropdown first
-                    try:
-                        select = page.locator("select").first
-                        await select.wait_for(state="visible", timeout=3000)
-                        pick = color or "Silver"
-                        # Try exact match, then fallback colors
-                        for c in [pick, "Silver", "White", "Black", "Gray", "Blue", "Red"]:
-                            try:
-                                await select.select_option(label=c, timeout=2000)
-                                answered.add("color")
-                                result["steps"].append(f"Color (dropdown): {c}")
-                                did_answer = True
-                                break
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
-
-                    # Try buttons if dropdown didn't work
-                    if "color" not in answered:
-                        pick = color or "Silver"
-                        for c in [pick, "Silver", "White", "Black", "Gray", "Blue", "Red"]:
-                            if await _safe_click_text(c, exact=True, timeout=3000):
-                                answered.add("color")
-                                result["steps"].append(f"Color (button): {c}")
-                                did_answer = True
-                                break
-
-                # Drivetrain — buttons (FWD, AWD, RWD, 4WD)
-                elif "drivetrain" in low and "drivetrain" not in answered:
-                    dt = drivetrain or "FWD"
-                    for d in [dt, "FWD", "AWD", "4WD", "RWD", "Front Wheel Drive", "All Wheel Drive"]:
-                        if await _safe_click_text(d, exact=True, timeout=3000):
-                            answered.add("drivetrain")
-                            result["steps"].append(f"Drivetrain: {d}")
-                            did_answer = True
-                            break
-
-                # Modifications — click "No modifications"
-                elif "modification" in low and "modification" not in answered:
-                    for opt in ["No modifications", "No Modifications", "No"]:
-                        if await _safe_click_text(opt, exact=False, timeout=4000):
-                            answered.add("modification")
-                            result["steps"].append("No modifications")
-                            did_answer = True
-                            break
-
-                # Condition
-                elif "condition" in low and "condition" not in answered:
+                # Condition (old single-question page — keep as fallback)
+                if "condition" in low and "condition" not in answered and "conditionux" in answered:
                     for opt in ["Just Okay", "Good", "Fair"]:
                         if await _safe_click_text(opt, timeout=4000):
                             answered.add("condition")
@@ -352,19 +633,26 @@ async def run_carvana_offer(
                 # Always try to advance
                 await _advance()
 
-                if not did_answer and attempt >= 5:
-                    logger.debug(f"[CarvanaOffer] No answer on attempt {attempt}, URL: {url}")
+                if not did_answer and attempt >= 3:
+                    logger.debug(
+                        f"[CarvanaOffer] no-answer attempt={attempt} url={url.split('?')[0][-60:]}"
+                    )
 
             # Final offer check
             if result["status"] != "completed":
-                body = await page.inner_text("body")
-                m = re.search(r'\$\s*[\d,]{4,}', body)
-                if m and ("offer" in body.lower() or "we'll pay" in body.lower()):
-                    result["offer"] = m.group(0).replace(" ", "")
+                # Try intercepted API offer one more time
+                if _intercepted_offer:
+                    result["offer"] = _intercepted_offer[-1]
                     result["status"] = "completed"
                 else:
-                    result["status"] = "error"
-                    result["error"] = "Could not retrieve offer — Carvana may have changed their flow."
+                    body = await page.inner_text("body")
+                    m = re.search(r'\$\s*[\d,]{4,}', body)
+                    if m and ("offer" in body.lower() or "we'll pay" in body.lower()):
+                        result["offer"] = m.group(0).replace(" ", "")
+                        result["status"] = "completed"
+                    else:
+                        result["status"] = "error"
+                        result["error"] = "Could not retrieve offer — Carvana may have changed their flow."
 
         except Exception as e:
             result["status"] = "error"
