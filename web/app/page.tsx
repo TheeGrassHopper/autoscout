@@ -64,6 +64,7 @@ function PipelinePanel() {
   const [zipCode, setZipCode] = useState("85288");
   const [radius, setRadius] = useState("500");
   const [dryRun, setDryRun] = useState(true);
+  const [includeFb, setIncludeFb] = useState(true);
   const [logs, setLogs] = useState<string[]>([]);
   const logsRef = useRef<HTMLDivElement>(null);
 
@@ -97,7 +98,7 @@ function PipelinePanel() {
 
   const start = async () => {
     setLogs([]);
-    await runPipeline(query, dryRun, zipCode, parseInt(radius) || 0);
+    await runPipeline(query, dryRun, zipCode, parseInt(radius) || 0, includeFb);
     setStatus((s) => ({ ...s, running: true }));
   };
 
@@ -170,6 +171,16 @@ function PipelinePanel() {
 
           <div className="flex-1" />
 
+          <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={includeFb}
+              onChange={(e) => setIncludeFb(e.target.checked)}
+              className="rounded"
+              disabled={status.running}
+            />
+            Facebook
+          </label>
           <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
             <input
               type="checkbox"

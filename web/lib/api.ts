@@ -143,8 +143,8 @@ export async function getCarvanaOfferStatus(listingId: string): Promise<CarvanaO
   return res.json();
 }
 
-export async function runPipeline(query = "", dryRun = true, zipCode = "", radiusMiles = 0): Promise<void> {
-  const params = new URLSearchParams({ query, dry_run: String(dryRun) });
+export async function runPipeline(query = "", dryRun = true, zipCode = "", radiusMiles = 0, includeFacebook = true): Promise<void> {
+  const params = new URLSearchParams({ query, dry_run: String(dryRun), include_facebook: String(includeFacebook) });
   if (zipCode) params.set("zip_code", zipCode);
   if (radiusMiles) params.set("radius_miles", String(radiusMiles));
   await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST", headers: authHeaders() });

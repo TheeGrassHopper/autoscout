@@ -499,6 +499,7 @@ def run_pipeline_endpoint(
     dry_run: bool = True,
     zip_code: str = "",
     radius_miles: int = 0,
+    include_facebook: bool = True,
 ):
     if _pipeline["running"]:
         raise HTTPException(409, "Pipeline already running")
@@ -506,11 +507,12 @@ def run_pipeline_endpoint(
         _run_pipeline_bg,
         query=query, dry_run=dry_run,
         zip_code=zip_code, radius_miles=radius_miles,
+        include_facebook=include_facebook,
     )
     return {"status": "started"}
 
 
-def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", radius_miles: int = 0):
+def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", radius_miles: int = 0, include_facebook: bool = True):
     _pipeline["running"] = True
     _pipeline["last_run"] = datetime.now().isoformat()
     _pipeline["start_time"] = datetime.now().isoformat()
@@ -527,6 +529,7 @@ def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", 
             query=query, dry_run=dry_run,
             zip_code=zip_code or None, radius_miles=radius_miles or None,
             stop_check=lambda: _pipeline["stop_requested"],
+            include_facebook=include_facebook,
         )
         _pipeline["last_count"] = len(results)
         msg = f"⛔ Pipeline stopped — {len(results)} listings processed" if _pipeline["stop_requested"] \

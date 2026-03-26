@@ -63,7 +63,8 @@ from utils.notifier import Notifier
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
-                 radius_miles: int = None, stop_check=None) -> list[ScoredListing]:
+                 radius_miles: int = None, stop_check=None,
+                 include_facebook: bool = True) -> list[ScoredListing]:
     """
     Execute the full AutoScout pipeline.
     Returns a list of scored listings.
@@ -103,9 +104,12 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
 
     # Facebook Marketplace (requires APIFY_API_TOKEN + FB_COOKIES)
     fb_env_enabled = os.getenv("FB_SCRAPER_ENABLED", "").lower()
-    fb_active = SOURCES.get("facebook_marketplace") and fb_env_enabled != "false"
-    if not fb_active and fb_env_enabled == "false":
-        logger.info("FB Marketplace scrape skipped (FB_SCRAPER_ENABLED=false)")
+    fb_active = SOURCES.get("facebook_marketplace") and fb_env_enabled != "false" and include_facebook
+    if not fb_active:
+        if not include_facebook:
+            logger.info("FB Marketplace scrape skipped (disabled by caller)")
+        elif fb_env_enabled == "false":
+            logger.info("FB Marketplace scrape skipped (FB_SCRAPER_ENABLED=false)")
     if fb_active:
         import json as _json
         apify_token = os.getenv("APIFY_API_TOKEN", "")
