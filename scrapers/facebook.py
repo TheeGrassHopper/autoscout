@@ -13,12 +13,22 @@ HOW TO GET YOUR FACEBOOK COOKIES:
        FB_COOKIES='[{"name":"c_user","value":"..."},{"name":"xs","value":"..."},...]'
   5. The minimum cookies needed: c_user, xs, datr, fr, sb
 
-The actor scrapes: Marketplace → Vehicles → Tempe AZ → 500mi radius
+ANTI-BLOCKING CONFIGURATION:
+  - Proxy: set APIFY_PROXY_GROUPS=RESIDENTIAL in .env for best results
+    (requires Apify paid plan; free plan uses datacenter proxies which FB blocks)
+  - Concurrency is limited to 1 to appear human-like
+  - Retries up to 2x with exponential backoff on BLOCKED errors
+
+ENABLE/DISABLE:
+  - Set FB_SCRAPER_ENABLED=false in .env to skip FB without changing config.py
+
+The actor scrapes: Marketplace → Vehicles → configured city → radius
 Private sellers only, clean title preferred, VIN extracted from descriptions.
 """
 
 import logging
 import re
+import time
 from typing import Optional
 
 from scrapers.craigslist import RawListing, _extract_vin
@@ -27,10 +37,14 @@ logger = logging.getLogger(__name__)
 
 APIFY_ACTOR_ID = "apify/facebook-marketplace-scraper"
 
+# Max actor retries on BLOCKED/failure before giving up
+_MAX_RUN_RETRIES = 2
+_RETRY_DELAYS = [10, 20]  # seconds between retries (exponential-ish)
+
 # FB Marketplace vehicles URL structure:
 # /marketplace/{city}/vehicles/ with query params for price, radius, delivery method
 FB_VEHICLES_URL = (
-    "https://www.facebook.com/marketplace/tempe/vehicles/"
+    "https://www.facebook.com/marketplace/{city}/vehicles/"
     "?minPrice={min_price}&maxPrice={max_price}"
     "&radius={radius}&deliveryMethod=local_pick_up"
     "&sortBy=creation_time_descend"
@@ -51,6 +65,7 @@ def scrape_facebook(
     """
     Scrape FB Marketplace vehicles via Apify.
     Requires fb_cookies (list of cookie dicts) for authenticated access.
+    Returns empty list on failure — pipeline continues with other sources.
     """
     if not apify_token:
         logger.warning("APIFY_API_TOKEN not set — skipping FB Marketplace scrape")
@@ -72,129 +87,246 @@ def scrape_facebook(
         return []
 
     client = ApifyClient(apify_token)
-    listings = []
+    city_slug = location.lower().replace(" ", "").replace(",", "")
 
-    # Build the vehicles search URL
-    search_url = FB_VEHICLES_URL.format(
-        min_price=min_price,
-        max_price=max_price,
-        radius=min(radius_miles, 500),  # FB max is 500mi
+    # Build search URLs
+    search_urls = _build_search_urls(city_slug, keywords, min_price, max_price, radius_miles)
+
+    # Build actor input with anti-blocking configuration
+    run_input = _build_run_input(search_urls, fb_cookies)
+
+    logger.info(
+        f"Triggering Apify FB Marketplace scrape — {len(search_urls)} URL(s), "
+        f"radius {radius_miles}mi, concurrency=1, proxy=residential"
     )
 
-    # If keywords given, add them to the search
-    search_urls = []
-    if keywords and any(keywords):
-        for kw in keywords:
-            if kw:
-                kw_slug = kw.lower().replace(" ", "%20")
-                search_urls.append({
-                    "url": f"https://www.facebook.com/marketplace/tempe/vehicles/?query={kw_slug}"
-                          f"&minPrice={min_price}&maxPrice={max_price}"
-                          f"&radius={min(radius_miles, 500)}&deliveryMethod=local_pick_up"
-                })
-    else:
-        search_urls.append({"url": search_url})
+    # Retry loop with exponential backoff
+    items = None
+    last_error = None
+    for attempt in range(1 + _MAX_RUN_RETRIES):
+        if attempt > 0:
+            delay = _RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)]
+            logger.warning(f"FB scrape retry {attempt}/{_MAX_RUN_RETRIES} — waiting {delay}s")
+            time.sleep(delay)
 
-    run_input = {
-        "startUrls": search_urls,
-        "maxItems": 100,
-        "cookies": fb_cookies,
-        "sessionCookies": fb_cookies,   # some actor versions use this key
-    }
+        try:
+            run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input, timeout_secs=360)
+            run_status = run.get("status", "UNKNOWN")
+            run_id = run.get("id", "?")
+            logger.info(f"Apify run status: {run_status} (id={run_id}, attempt={attempt + 1})")
 
-    logger.info(f"Triggering Apify FB Marketplace scrape — {len(search_urls)} URL(s), radius {radius_miles}mi")
-    logger.info(f"FB search URL: {search_urls[0]['url'] if search_urls else '(none)'}")
-
-    try:
-        run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input, timeout_secs=300)
-
-        # Log run status so we can diagnose failures
-        run_status = run.get("status", "UNKNOWN")
-        logger.info(f"Apify run status: {run_status} (id={run.get('id', '?')})")
-        if run_status not in ("SUCCEEDED", "RUNNING"):
-            logger.warning(f"Apify run did not succeed — status: {run_status}. Check https://console.apify.com/actors/runs/{run.get('id','')}")
-
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
-        logger.info(f"Apify returned {len(items)} FB items")
-
-        # Log first raw item so we can diagnose field name issues
-        if items:
-            first = items[0]
-            logger.info(f"FB item sample keys: {list(first.keys())[:10]}")
-            logger.info(f"FB item sample: price={first.get('price')}, id={first.get('id')}, title={str(first.get('title',''))[:40]}")
-        else:
-            logger.warning("Apify returned 0 FB items — possible causes: cookies expired, actor blocked, or no listings match filters")
-
-        for item in items:
-            # Skip error items
-            if item.get("error"):
-                logger.warning(f"FB item error: {item.get('errorDescription', item.get('error'))}")
+            if run_status not in ("SUCCEEDED", "RUNNING"):
+                last_error = f"status={run_status}"
+                logger.warning(
+                    f"Apify run did not succeed — {last_error}. "
+                    f"Check https://console.apify.com/actors/runs/{run_id}"
+                )
                 continue
 
-            listing_id = str(item.get("id", "") or item.get("listing_id", ""))
-            if not listing_id:
+            candidate_items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+            logger.info(f"Apify returned {len(candidate_items)} FB items (attempt {attempt + 1})")
+
+            if candidate_items and items is not None and len(items) > 0:
+                # Log first item sample for diagnostics
+                first = candidate_items[0]
+                logger.info(f"FB item sample keys: {list(first.keys())[:10]}")
+                logger.info(
+                    f"FB item sample: price={first.get('price')}, "
+                    f"id={first.get('id')}, title={str(first.get('title',''))[:40]}"
+                )
+
+            # Check if results are all BLOCKED errors
+            if _all_blocked(candidate_items):
+                last_error = "BLOCKED"
+                logger.warning(
+                    f"FB Marketplace blocked (attempt {attempt + 1}) — "
+                    "actor hit bot detection on all requests"
+                )
                 continue
 
-            fb_id = f"fb_{listing_id}"
-            if fb_id in seen_ids:
-                continue
+            items = candidate_items
+            break  # Success
 
-            price = _parse_fb_price(item.get("price", ""))
-            if not price:
-                logger.debug(f"FB skip (no price): {item.get('title','')[:40]}")
-                continue
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"Apify FB call failed (attempt {attempt + 1}): {e}")
 
-            description = (item.get("description", "") or "")[:1200]
-            mileage = _parse_fb_mileage(
-                item.get("mileage", "") or item.get("condition", "") or description
-            )
+    # Final fallback if all attempts failed
+    if items is None:
+        logger.error(
+            f"FB Marketplace blocked after {1 + _MAX_RUN_RETRIES} attempts — "
+            "consider: (1) refreshing FB_COOKIES, (2) upgrading to Apify RESIDENTIAL proxy, "
+            f"(3) setting FB_SCRAPER_ENABLED=false to suppress this. Last error: {last_error}"
+        )
+        return []
 
-            if mileage and mileage > max_mileage:
-                continue
+    if not items:
+        logger.warning(
+            "Apify returned 0 FB items — possible causes: cookies expired, "
+            "no listings match filters, or actor blocked"
+        )
 
-            # Extract VIN from description
-            vin = _extract_vin(description)
-
-            # Detect title status
-            title_status = _detect_title_status(
-                item.get("title", ""), description
-            )
-
-            listing = RawListing(
-                listing_id=fb_id,
-                source="facebook",
-                url=item.get("url") or f"https://www.facebook.com/marketplace/item/{listing_id}",
-                title=(item.get("title", "") or "").strip(),
-                price=price,
-                location=item.get("location", location),
-                posted_date=item.get("postedAt", "") or item.get("listed_at", ""),
-                description=description,
-                image_urls=item.get("images") or [],
-                mileage=mileage,
-                vin=vin,
-                title_status=title_status,
-            )
-
-            # Parse make/model/year from title
-            from scrapers.craigslist import CraigslistScraper
-            dummy = CraigslistScraper.__new__(CraigslistScraper)
-            dummy._parse_title_fields(listing, listing.title)
-
-            listings.append(listing)
-            seen_ids.add(fb_id)
-
-    except Exception as e:
-        logger.error(f"Apify FB scrape failed: {e}")
-
+    # Parse items into RawListing objects
+    listings = _parse_items(items, location, max_mileage, seen_ids)
     logger.info(f"Facebook Marketplace: {len(listings)} new listings")
     return listings
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _build_search_urls(
+    city_slug: str,
+    keywords: list[str],
+    min_price: int,
+    max_price: int,
+    radius_miles: int,
+) -> list[dict]:
+    """Build the list of FB Marketplace search URLs for the actor."""
+    radius = min(radius_miles, 500)  # FB max is 500mi
+    if keywords and any(keywords):
+        urls = []
+        for kw in keywords:
+            if kw:
+                kw_enc = kw.lower().replace(" ", "%20")
+                urls.append({
+                    "url": (
+                        f"https://www.facebook.com/marketplace/{city_slug}/vehicles/"
+                        f"?query={kw_enc}&minPrice={min_price}&maxPrice={max_price}"
+                        f"&radius={radius}&deliveryMethod=local_pick_up"
+                    )
+                })
+        if urls:
+            return urls
+    return [{
+        "url": FB_VEHICLES_URL.format(
+            city=city_slug,
+            min_price=min_price,
+            max_price=max_price,
+            radius=radius,
+        )
+    }]
+
+
+def _build_run_input(search_urls: list[dict], fb_cookies: list) -> dict:
+    """
+    Build Apify actor input with anti-blocking settings:
+    - Residential proxy rotation
+    - Concurrency limited to 1 (sequential, human-like)
+    - Increased timeouts and retries
+    - Cookie-based auth
+    """
+    return {
+        "startUrls": search_urls,
+        "maxItems": 100,
+        "cookies": fb_cookies,
+        "sessionCookies": fb_cookies,  # some actor versions use this key
+        # Anti-blocking: proxy rotation
+        "proxyConfiguration": {
+            "useApifyProxy": True,
+            "apifyProxyGroups": ["RESIDENTIAL"],  # best for FB; falls back if unavailable
+        },
+        # Anti-blocking: slow down to appear human
+        "maxConcurrency": 1,
+        "minConcurrency": 1,
+        # Generous timeouts to allow JS-rendered pages to load
+        "navigationTimeoutSecs": 90,
+        "requestHandlerTimeoutSecs": 120,
+        # Retry on individual request failures within the actor
+        "maxRequestRetries": 3,
+    }
+
+
+def _all_blocked(items: list) -> bool:
+    """
+    Return True if every item in the dataset is a BLOCKED error indicator.
+    An empty dataset is NOT treated as blocked (could be zero listings).
+    """
+    if not items:
+        return False
+    blocked_count = sum(
+        1 for item in items
+        if _is_blocked_item(item)
+    )
+    # Treat as blocked if >80% of items are error/blocked signals
+    return blocked_count > 0 and blocked_count / len(items) > 0.8
+
+
+def _is_blocked_item(item: dict) -> bool:
+    """Detect whether an item represents a BLOCKED / error response."""
+    if item.get("error"):
+        err = str(item.get("errorDescription", item.get("error", ""))).lower()
+        return "block" in err or "captcha" in err or "login" in err or "403" in err
+    # Some actor versions return a `status` field
+    status = str(item.get("status", "")).lower()
+    return status in ("blocked", "failed", "error")
+
+
+def _parse_items(
+    items: list,
+    location: str,
+    max_mileage: int,
+    seen_ids: set[str],
+) -> list[RawListing]:
+    """Convert raw Apify item dicts into RawListing objects."""
+    from scrapers.craigslist import CraigslistScraper
+
+    listings = []
+    for item in items:
+        if item.get("error") or _is_blocked_item(item):
+            logger.warning(f"FB item error: {item.get('errorDescription', item.get('error'))}")
+            continue
+
+        listing_id = str(item.get("id", "") or item.get("listing_id", ""))
+        if not listing_id:
+            continue
+
+        fb_id = f"fb_{listing_id}"
+        if fb_id in seen_ids:
+            continue
+
+        price = _parse_fb_price(item.get("price", ""))
+        if not price:
+            logger.debug(f"FB skip (no price): {item.get('title','')[:40]}")
+            continue
+
+        description = (item.get("description", "") or "")[:1200]
+        mileage = _parse_fb_mileage(
+            item.get("mileage", "") or item.get("condition", "") or description
+        )
+
+        if mileage and mileage > max_mileage:
+            continue
+
+        vin = _extract_vin(description)
+        title_status = _detect_title_status(item.get("title", ""), description)
+
+        listing = RawListing(
+            listing_id=fb_id,
+            source="facebook",
+            url=item.get("url") or f"https://www.facebook.com/marketplace/item/{listing_id}",
+            title=(item.get("title", "") or "").strip(),
+            price=price,
+            location=item.get("location", location),
+            posted_date=item.get("postedAt", "") or item.get("listed_at", ""),
+            description=description,
+            image_urls=item.get("images") or [],
+            mileage=mileage,
+            vin=vin,
+            title_status=title_status,
+        )
+
+        # Parse make/model/year from title
+        dummy = CraigslistScraper.__new__(CraigslistScraper)
+        dummy._parse_title_fields(listing, listing.title)
+
+        listings.append(listing)
+        seen_ids.add(fb_id)
+
+    return listings
+
 
 def _check_cookie_expiry(cookies: list):
     """Warn in logs if any critical FB cookies are expiring soon or already expired."""
-    import time
     now = time.time()
     critical = {"c_user", "xs", "datr", "fr", "sb"}
     for cookie in cookies:
@@ -206,17 +338,18 @@ def _check_cookie_expiry(cookies: list):
         if days_left < 0:
             logger.error(
                 f"FB cookie '{name}' has EXPIRED ({abs(days_left):.0f} days ago) — "
-                f"re-export your Facebook cookies and update FB_COOKIES in .env"
+                "re-export your Facebook cookies and update FB_COOKIES in .env"
             )
         elif days_left < 7:
             logger.warning(
                 f"FB cookie '{name}' expires in {days_left:.0f} day(s) — "
-                f"re-export soon to avoid scrape failures"
+                "re-export soon to avoid scrape failures"
             )
         elif days_left < 21:
             logger.warning(
                 f"FB cookie '{name}' expires in {days_left:.0f} days — plan to refresh"
             )
+
 
 def _parse_fb_price(price_str: str) -> Optional[int]:
     clean = re.sub(r"[^\d]", "", str(price_str))

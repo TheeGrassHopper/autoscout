@@ -102,7 +102,11 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
         logger.info(f"Craigslist: {len(cl_listings)} listings after filtering")
 
     # Facebook Marketplace (requires APIFY_API_TOKEN + FB_COOKIES)
-    if SOURCES.get("facebook_marketplace"):
+    fb_env_enabled = os.getenv("FB_SCRAPER_ENABLED", "").lower()
+    fb_active = SOURCES.get("facebook_marketplace") and fb_env_enabled != "false"
+    if not fb_active and fb_env_enabled == "false":
+        logger.info("FB Marketplace scrape skipped (FB_SCRAPER_ENABLED=false)")
+    if fb_active:
         import json as _json
         apify_token = os.getenv("APIFY_API_TOKEN", "")
         fb_cookies_raw = os.getenv("FB_COOKIES", "")
