@@ -158,7 +158,11 @@ export async function runPipeline(query = "", dryRun = true, zipCode = "", radiu
   if (filters.maxYear)   params.set("max_year",    String(filters.maxYear));
   if (filters.maxPrice)  params.set("max_price",   String(filters.maxPrice));
   if (filters.maxMileage) params.set("max_mileage", String(filters.maxMileage));
-  await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST", headers: authHeaders() });
+  const res = await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST", headers: authHeaders() });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `Failed to start pipeline (${res.status})`);
+  }
 }
 
 // ── User portal ───────────────────────────────────────────────────────────────

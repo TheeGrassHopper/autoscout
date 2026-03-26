@@ -151,7 +151,15 @@ def _rows(rows) -> list[dict]:
 from utils.email import send_email as _send_email
 
 def _db_exists() -> bool:
-    return os.path.exists(DB_PATH)
+    if not os.path.exists(DB_PATH):
+        return False
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='listings'").fetchone()
+        conn.close()
+        return row is not None
+    except Exception:
+        return False
 
 def _fav_db():
     conn = sqlite3.connect(FAV_DB_PATH)
@@ -484,6 +492,11 @@ def run_pipeline_endpoint(
 ):
     if _pipeline["running"]:
         raise HTTPException(409, "Pipeline already running")
+    # Set running=True immediately (before background task starts) to prevent race condition
+    _pipeline["running"] = True
+    _pipeline["last_run"] = datetime.now().isoformat()
+    _pipeline["start_time"] = datetime.now().isoformat()
+    _pipeline["stop_requested"] = False
     background_tasks.add_task(
         _run_pipeline_bg,
         query=query, dry_run=dry_run,
@@ -498,11 +511,6 @@ def run_pipeline_endpoint(
 def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", radius_miles: int = 0,
                      include_facebook: bool = True, min_year: int = 0, max_year: int = 0,
                      max_price: int = 0, max_mileage: int = 0):
-    _pipeline["running"] = True
-    _pipeline["last_run"] = datetime.now().isoformat()
-    _pipeline["start_time"] = datetime.now().isoformat()
-    _pipeline["stop_requested"] = False
-
     handler = _QueueLogHandler(_pipeline["logs"])
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s — %(message)s", "%H:%M:%S"))
     root = logging.getLogger()

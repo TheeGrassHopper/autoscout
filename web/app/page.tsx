@@ -71,6 +71,7 @@ function PipelinePanel() {
   const [maxPrice, setMaxPrice] = useState("40000");
   const [maxMileage, setMaxMileage] = useState("190000");
   const [logs, setLogs] = useState<string[]>([]);
+  const [runError, setRunError] = useState<string | null>(null);
   const logsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -103,14 +104,19 @@ function PipelinePanel() {
 
   const start = async () => {
     setLogs([]);
+    setRunError(null);
     const filters: RunFilters = {
       minYear:    parseInt(minYear)    || undefined,
       maxYear:    parseInt(maxYear)    || undefined,
       maxPrice:   parseInt(maxPrice)   || undefined,
       maxMileage: parseInt(maxMileage) || undefined,
     };
-    await runPipeline(query, dryRun, zipCode, parseInt(radius) || 0, includeFb, filters);
-    setStatus((s) => ({ ...s, running: true }));
+    try {
+      await runPipeline(query, dryRun, zipCode, parseInt(radius) || 0, includeFb, filters);
+      setStatus((s) => ({ ...s, running: true }));
+    } catch (err: unknown) {
+      setRunError(err instanceof Error ? err.message : "Failed to start pipeline");
+    }
   };
 
   const clearDb = async () => {
@@ -266,6 +272,12 @@ function PipelinePanel() {
           </button>
         </div>
       </div>
+
+      {runError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2">
+          {runError}
+        </div>
+      )}
 
       {logs.length > 0 && (
         <div

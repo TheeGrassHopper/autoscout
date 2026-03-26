@@ -17,6 +17,7 @@ Returns the median asking price of matching comps.
 import logging
 import re
 import statistics
+import time
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -51,16 +52,17 @@ class CompsEngine:
                 count += 1
         logger.info(f"Comps: pre-loaded {count} listings from main scrape into comp cache")
 
-    def fetch_all_comps(self, unique_vehicles: set[tuple]):
+    def fetch_all_comps(self, unique_vehicles: set[tuple], max_seconds: int = 60):
         """
         Open ONE Playwright browser and scrape national Craigslist for
-        every unique (make, model) pair. Reuses the same browser context
-        across all vehicles for efficiency.
+        every unique (make, model) pair. Stops after max_seconds total to
+        avoid blocking the pipeline indefinitely.
         """
         if not unique_vehicles:
             return
 
-        logger.info(f"Comps: fetching national Craigslist comps for {len(unique_vehicles)} vehicle type(s)…")
+        logger.info(f"Comps: fetching national CL comps for {len(unique_vehicles)} vehicle type(s) (max {max_seconds}s)…")
+        deadline = time.time() + max_seconds
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -72,6 +74,9 @@ class CompsEngine:
                 )
             )
             for make, model in unique_vehicles:
+                if time.time() > deadline:
+                    logger.info(f"Comps: time limit reached — skipping remaining vehicles")
+                    break
                 try:
                     comps = self._scrape_cl_national(context, make, model)
                     key = (make.lower(), model.lower())
@@ -142,9 +147,9 @@ class CompsEngine:
 
         page = context.new_page()
         try:
-            page.goto(url, wait_until="networkidle", timeout=30_000)
+            page.goto(url, wait_until="domcontentloaded", timeout=15_000)
             try:
-                page.wait_for_selector("[data-pid]", timeout=15_000)
+                page.wait_for_selector("[data-pid]", timeout=8_000)
             except PWTimeout:
                 logger.debug(f"Comps: no CL national results for {make} {model}")
                 return results
