@@ -62,7 +62,7 @@ function PipelinePanel() {
   });
   const [query, setQuery] = useState("");
   const [zipCode, setZipCode] = useState("85288");
-  const [radius, setRadius] = useState("500");
+  const [radius, setRadius] = useState("100");
   const [dryRun, setDryRun] = useState(true);
   const [includeFb, setIncludeFb] = useState(true);
   const [logs, setLogs] = useState<string[]>([]);
@@ -159,7 +159,7 @@ function PipelinePanel() {
             <label className="text-xs text-slate-500 whitespace-nowrap">Radius (mi)</label>
             <input
               className="w-20 text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
-              placeholder="500"
+              placeholder="100"
               value={radius}
               onChange={(e) => setRadius(e.target.value)}
               disabled={status.running}
