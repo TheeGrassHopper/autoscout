@@ -219,9 +219,9 @@ function CarvanaOfferSection({ deal }: { deal: Deal }) {
 
 function ImageGallery({ urls }: { urls: string[] }) {
   const [lightbox, setLightbox] = useState<number | null>(null);
-  const [failed, setFailed] = useState<Set<number>>(new Set());
+  const [failed, setFailed] = useState<number[]>([]);
 
-  const visible = urls.filter((_, i) => !failed.has(i));
+  const visible = urls.filter((_, i) => !failed.includes(i));
 
   const openAt = (originalIndex: number) => {
     const visibleIndex = visible.indexOf(urls[originalIndex]);
@@ -244,7 +244,7 @@ function ImageGallery({ urls }: { urls: string[] }) {
     return () => window.removeEventListener("keydown", handleKey);
   }, [lightbox, visible.length]);
 
-  if (visible.length === 0 && failed.size < urls.length) return null;
+  if (visible.length === 0 && failed.length < urls.length) return null;
 
   return (
     <>
@@ -258,8 +258,8 @@ function ImageGallery({ urls }: { urls: string[] }) {
               alt={`Photo ${i + 1}`}
               referrerPolicy="no-referrer"
               onClick={() => openAt(i)}
-              onError={() => setFailed((s) => new Set([...s, i]))}
-              className={`h-28 w-40 object-cover rounded-lg flex-shrink-0 snap-start cursor-pointer hover:opacity-90 transition-opacity border border-gray-100 ${failed.has(i) ? "hidden" : ""}`}
+              onError={() => setFailed((s) => s.includes(i) ? s : [...s, i])}
+              className={`h-28 w-40 object-cover rounded-lg flex-shrink-0 snap-start cursor-pointer hover:opacity-90 transition-opacity border border-gray-100 ${failed.includes(i) ? "hidden" : ""}`}
             />
           ))}
         </div>
