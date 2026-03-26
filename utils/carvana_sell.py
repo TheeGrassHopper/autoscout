@@ -288,10 +288,12 @@ async def run_carvana_offer(
     description: str = "",
     zip_code: str = DEFAULT_ZIP,
     email: str = DEFAULT_EMAIL,
+    max_retries: int = 3,
 ) -> dict:
     """
     Runs the Carvana sell flow using camoufox and returns:
       {"offer": "$X,XXX" | None, "status": "completed"|"error", "error": str|None, "steps": [...]}
+    Retries up to max_retries times on Cloudflare blocks (common on datacenter IPs).
     """
     from camoufox.async_api import AsyncCamoufox
     from utils.vin_decode import decode_vin
@@ -660,4 +662,17 @@ async def run_carvana_offer(
             logger.error(f"[CarvanaOffer] Error: {e}", exc_info=True)
 
     logger.info(f"[CarvanaOffer] Done: status={result['status']} offer={result['offer']}")
+
+    # Retry on Cloudflare block — datacenter IPs (Railway) get blocked intermittently
+    if (result["status"] == "error"
+            and "cloudflare" in (result.get("error") or "").lower()
+            and max_retries > 1):
+        wait = (4 - max_retries) * 8 + 8  # 8s → 16s → 24s
+        logger.info(f"[CarvanaOffer] Cloudflare block — retrying in {wait}s ({max_retries-1} attempts left)")
+        await asyncio.sleep(wait)
+        return await run_carvana_offer(
+            vin, mileage, title, description, zip_code, email,
+            max_retries=max_retries - 1,
+        )
+
     return result
