@@ -82,14 +82,19 @@ def execute_search(user_id: int, search_id: int, user: dict = Depends(current_us
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Search not found")
 
     c = saved["criteria"]
-    conn = sqlite3.connect(_MAIN_DB)
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(
-            "SELECT * FROM listings ORDER BY total_score DESC LIMIT 500"
-        ).fetchall()
-    finally:
-        conn.close()
+    rows = []
+    if os.path.exists(_MAIN_DB):
+        conn = sqlite3.connect(_MAIN_DB)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT * FROM listings ORDER BY total_score DESC LIMIT 500"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # listings table doesn't exist yet (pipeline never run)
+            rows = []
+        finally:
+            conn.close()
 
     results = []
     for row in rows:

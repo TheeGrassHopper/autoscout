@@ -227,6 +227,7 @@ export default function SearchesPage() {
   const [results, setResults] = useState<{ searchId: number; deals: Deal[] } | null>(null);
   const [running, setRunning] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
 
   const user = getUser();
 
@@ -242,9 +243,12 @@ export default function SearchesPage() {
   const run = async (search: SavedSearch) => {
     if (!user) return;
     setRunning(search.id);
+    setRunError(null);
     try {
       const { results: deals } = await executeSavedSearch(user.id, search.id);
       setResults({ searchId: search.id, deals });
+    } catch (err: unknown) {
+      setRunError(err instanceof Error ? err.message : "Failed to run search");
     } finally {
       setRunning(null);
     }
@@ -290,8 +294,14 @@ export default function SearchesPage() {
         </div>
       </div>
 
+      {runError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">
+          {runError}
+        </div>
+      )}
+
       {results && (
-        <SearchResultsPanel results={results.deals} onClose={() => setResults(null)} />
+        <SearchResultsPanel results={results.deals} onClose={() => { setResults(null); setRunError(null); }} />
       )}
 
       {searches.length === 0 ? (
