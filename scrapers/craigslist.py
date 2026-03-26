@@ -380,6 +380,19 @@ class CraigslistScraper:
                 listing.vin = vin
                 logger.debug(f"  VIN found: {vin} — {listing.title[:40]}")
 
+            # Extract full-resolution images from the detail page gallery
+            full_images = []
+            for img in page.locator("img.swipe-slide-img, .swipe-wrap img, #bigpic img").all():
+                src = img.get_attribute("src") or img.get_attribute("data-src") or ""
+                if src and "craigslist.org" in src:
+                    # Upsize: replace _300 / _600 thumbnails with _1200
+                    src = re.sub(r"_\d+\.jpg$", "_1200.jpg", src)
+                    if src not in full_images:
+                        full_images.append(src)
+            if full_images:
+                listing.image_urls = full_images[:20]
+                logger.debug(f"  {len(full_images)} full-res images — {listing.title[:40]}")
+
         finally:
             page.close()
 

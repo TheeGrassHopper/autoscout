@@ -219,54 +219,111 @@ function CarvanaOfferSection({ deal }: { deal: Deal }) {
 
 function ImageGallery({ urls }: { urls: string[] }) {
   const [lightbox, setLightbox] = useState<number | null>(null);
+  const [failed, setFailed] = useState<Set<number>>(new Set());
+
+  const visible = urls.filter((_, i) => !failed.has(i));
+
+  const openAt = (originalIndex: number) => {
+    const visibleIndex = visible.indexOf(urls[originalIndex]);
+    if (visibleIndex >= 0) setLightbox(visibleIndex);
+  };
+
+  const prev = (e: React.MouseEvent) => { e.stopPropagation(); setLightbox((n) => (n != null && n > 0 ? n - 1 : n)); };
+  const next = (e: React.MouseEvent) => { e.stopPropagation(); setLightbox((n) => (n != null && n < visible.length - 1 ? n + 1 : n)); };
+
+  // keyboard navigation
+  const handleKey = (e: KeyboardEvent) => {
+    if (lightbox === null) return;
+    if (e.key === "ArrowLeft" && lightbox > 0) setLightbox(lightbox - 1);
+    if (e.key === "ArrowRight" && lightbox < visible.length - 1) setLightbox(lightbox + 1);
+    if (e.key === "Escape") setLightbox(null);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [lightbox, visible.length]);
+
+  if (visible.length === 0 && failed.size < urls.length) return null;
 
   return (
     <>
-      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-        {urls.map((url, i) => (
-          <img
-            key={i}
-            src={url}
-            alt={`Listing image ${i + 1}`}
-            referrerPolicy="no-referrer"
-            onClick={() => setLightbox(i)}
-            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-            className="h-28 w-40 object-cover rounded-lg flex-shrink-0 cursor-pointer hover:opacity-90 transition-opacity border border-gray-100"
-          />
-        ))}
+      {/* Thumbnail strip */}
+      <div className="relative">
+        <div className="flex gap-2 overflow-x-auto pb-2 snap-x snap-mandatory scrollbar-thin">
+          {urls.map((url, i) => (
+            <img
+              key={i}
+              src={url}
+              alt={`Photo ${i + 1}`}
+              referrerPolicy="no-referrer"
+              onClick={() => openAt(i)}
+              onError={() => setFailed((s) => new Set([...s, i]))}
+              className={`h-28 w-40 object-cover rounded-lg flex-shrink-0 snap-start cursor-pointer hover:opacity-90 transition-opacity border border-gray-100 ${failed.has(i) ? "hidden" : ""}`}
+            />
+          ))}
+        </div>
+        {visible.length > 1 && (
+          <div className="absolute bottom-3 right-2 bg-black/50 text-white text-xs px-1.5 py-0.5 rounded pointer-events-none">
+            {visible.length} photos
+          </div>
+        )}
       </div>
 
+      {/* Lightbox */}
       {lightbox !== null && (
         <div
-          className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center"
+          className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center"
           onClick={() => setLightbox(null)}
         >
-          <button
-            className="absolute top-4 right-4 text-white text-2xl hover:opacity-70"
-            onClick={() => setLightbox(null)}
-          >✕</button>
+          {/* Close */}
+          <button className="absolute top-4 right-4 text-white text-2xl hover:opacity-70 z-10" onClick={() => setLightbox(null)}>✕</button>
+
+          {/* Counter */}
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 text-white text-sm bg-black/40 px-3 py-1 rounded-full">
+            {lightbox + 1} / {visible.length}
+          </div>
+
+          {/* Prev */}
           {lightbox > 0 && (
             <button
-              className="absolute left-4 text-white text-3xl hover:opacity-70 px-2"
-              onClick={(e) => { e.stopPropagation(); setLightbox(lightbox - 1); }}
+              className="absolute left-3 md:left-6 text-white text-4xl hover:opacity-70 px-3 py-6 z-10"
+              onClick={prev}
             >‹</button>
           )}
+
+          {/* Main image */}
           <img
-            src={urls[lightbox]}
-            alt={`Image ${lightbox + 1}`}
+            src={visible[lightbox]}
+            alt={`Photo ${lightbox + 1}`}
             referrerPolicy="no-referrer"
-            className="max-h-[85vh] max-w-[90vw] object-contain rounded-lg"
+            className="max-h-[85vh] max-w-[90vw] object-contain rounded"
             onClick={(e) => e.stopPropagation()}
           />
-          {lightbox < urls.length - 1 && (
+
+          {/* Next */}
+          {lightbox < visible.length - 1 && (
             <button
-              className="absolute right-4 text-white text-3xl hover:opacity-70 px-2"
-              onClick={(e) => { e.stopPropagation(); setLightbox(lightbox + 1); }}
+              className="absolute right-3 md:right-6 text-white text-4xl hover:opacity-70 px-3 py-6 z-10"
+              onClick={next}
             >›</button>
           )}
-          <div className="absolute bottom-4 text-white text-sm opacity-60">
-            {lightbox + 1} / {urls.length}
-          </div>
+
+          {/* Thumbnail strip at bottom */}
+          {visible.length > 1 && (
+            <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-1.5 px-4 overflow-x-auto">
+              {visible.map((url, i) => (
+                <img
+                  key={i}
+                  src={url}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  onClick={(e) => { e.stopPropagation(); setLightbox(i); }}
+                  className={`h-12 w-16 object-cover rounded flex-shrink-0 cursor-pointer transition-all ${i === lightbox ? "ring-2 ring-white opacity-100" : "opacity-50 hover:opacity-80"}`}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </>
