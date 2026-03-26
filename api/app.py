@@ -35,6 +35,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # ── Path setup (so we can import from the project root) ──────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from api.routers import auth as auth_router, users as users_router
+
 from config import (FILTERS, LOCATION, MESSAGING, NOTIFICATIONS,
                     OUTPUT, PRICING_SOURCES, SCORING, SOURCES)
 
@@ -73,7 +75,8 @@ _API_KEY = os.getenv("AUTOSCOUT_API_KEY", "")
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
     if _API_KEY:
-        if request.method == "OPTIONS" or request.url.path == "/health":
+        path = request.url.path
+        if request.method == "OPTIONS" or path == "/health" or path.startswith("/auth"):
             return await call_next(request)
         # Accept key from header OR query param (EventSource can't set headers)
         key = (
@@ -103,6 +106,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+# ── User portal routers ───────────────────────────────────────────────────────
+app.include_router(auth_router.router)
+app.include_router(users_router.router)
 
 DB_PATH = OUTPUT.get("db_path", "output/autoscout.db")
 FAV_DB_PATH = "output/favorites.db"

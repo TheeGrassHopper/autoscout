@@ -141,3 +141,114 @@ export async function runPipeline(query = "", dryRun = true, zipCode = "", radiu
   if (radiusMiles) params.set("radius_miles", String(radiusMiles));
   await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST", headers: authHeaders() });
 }
+
+// ── User portal ───────────────────────────────────────────────────────────────
+
+import { getToken } from "@/lib/auth";
+
+function userHeaders(): HeadersInit {
+  const h: Record<string, string> = { ...(authHeaders() as Record<string, string>) };
+  const token = getToken();
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  created_at: string;
+}
+
+export async function apiRegister(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
+  const res = await fetch(`${BASE}/auth/register`, {
+    method: "POST",
+    headers: { ...authHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error((await res.json()).detail ?? "Registration failed");
+  return res.json();
+}
+
+export async function apiLogin(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
+  const res = await fetch(`${BASE}/auth/login`, {
+    method: "POST",
+    headers: { ...authHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error((await res.json()).detail ?? "Login failed");
+  return res.json();
+}
+
+export interface SearchCriteria {
+  query?: string;
+  zip_code?: string;
+  radius_miles?: number;
+  min_year?: number | null;
+  max_year?: number | null;
+  min_price?: number | null;
+  max_price?: number | null;
+  max_mileage?: number | null;
+  make?: string | null;
+  model?: string | null;
+}
+
+export interface SavedSearch {
+  id: number;
+  user_id: number;
+  name: string;
+  criteria: SearchCriteria;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getSavedSearches(userId: number): Promise<SavedSearch[]> {
+  const res = await fetch(`${BASE}/users/${userId}/searches`, { cache: "no-store", headers: userHeaders() });
+  if (!res.ok) throw new Error("Failed to load searches");
+  return res.json();
+}
+
+export async function createSavedSearch(userId: number, name: string, criteria: SearchCriteria): Promise<SavedSearch> {
+  const res = await fetch(`${BASE}/users/${userId}/searches`, {
+    method: "POST",
+    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, criteria }),
+  });
+  if (!res.ok) throw new Error("Failed to create search");
+  return res.json();
+}
+
+export async function executeSavedSearch(userId: number, searchId: number): Promise<{ count: number; results: Deal[] }> {
+  const res = await fetch(`${BASE}/users/${userId}/searches/${searchId}/execute`, {
+    method: "POST",
+    headers: userHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to execute search");
+  return res.json();
+}
+
+export async function deleteSavedSearch(userId: number, searchId: number): Promise<void> {
+  await fetch(`${BASE}/users/${userId}/searches/${searchId}`, { method: "DELETE", headers: userHeaders() });
+}
+
+export async function deleteAllSavedSearches(userId: number): Promise<{ deleted: number }> {
+  const res = await fetch(`${BASE}/users/${userId}/searches`, { method: "DELETE", headers: userHeaders() });
+  return res.json();
+}
+
+export async function getUserFavorites(userId: number): Promise<Deal[]> {
+  const res = await fetch(`${BASE}/users/${userId}/favorites`, { cache: "no-store", headers: userHeaders() });
+  if (!res.ok) throw new Error("Failed to load favorites");
+  return res.json();
+}
+
+export async function addUserFavorite(userId: number, deal: Deal): Promise<void> {
+  await fetch(`${BASE}/users/${userId}/favorites`, {
+    method: "POST",
+    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify({ listing_data: deal }),
+  });
+}
+
+export async function removeUserFavorite(userId: number, listingId: string): Promise<void> {
+  await fetch(`${BASE}/users/${userId}/favorites/${listingId}`, { method: "DELETE", headers: userHeaders() });
+}
