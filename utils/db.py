@@ -4,6 +4,7 @@ SQLite database for tracking listings, scores, and sent messages.
 Prevents duplicate messages and tracks pipeline history.
 """
 
+import json
 import sqlite3
 import logging
 import os
@@ -80,6 +81,7 @@ class Database:
                 ("vin", "TEXT"),
                 ("title_status", "TEXT"),
                 ("posted_date", "TEXT"),
+                ("image_urls", "TEXT"),
             ]:
                 if col not in existing:
                     conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
@@ -88,6 +90,7 @@ class Database:
     def upsert_listing(self, scored_listing):
         """Insert or update a scored listing."""
         now = datetime.now().isoformat()
+        image_urls_json = json.dumps(getattr(scored_listing, "image_urls", None) or [])
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO listings
@@ -95,8 +98,8 @@ class Database:
                      carvana_value, local_market_value, blended_market_value,
                      profit_estimate, profit_margin_pct, demand_score,
                      savings, total_score, deal_class, make, model, year, mileage,
-                     location, vin, title_status, posted_date, first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     location, vin, title_status, posted_date, image_urls, first_seen, last_seen)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(listing_id) DO UPDATE SET
                     kbb_value=excluded.kbb_value,
                     carvana_value=excluded.carvana_value,
@@ -108,6 +111,7 @@ class Database:
                     savings=excluded.savings,
                     total_score=excluded.total_score,
                     deal_class=excluded.deal_class,
+                    image_urls=excluded.image_urls,
                     last_seen=excluded.last_seen
             """, (
                 scored_listing.listing_id,
@@ -133,6 +137,7 @@ class Database:
                 scored_listing.vin or None,
                 getattr(scored_listing, "title_status", None),
                 scored_listing.posted_date,
+                image_urls_json,
                 now, now,
             ))
 

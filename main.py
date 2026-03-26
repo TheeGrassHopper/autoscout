@@ -62,7 +62,8 @@ from utils.notifier import Notifier
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
-def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None, radius_miles: int = None) -> list[ScoredListing]:
+def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
+                 radius_miles: int = None, stop_check=None) -> list[ScoredListing]:
     """
     Execute the full AutoScout pipeline.
     Returns a list of scored listings.
@@ -128,6 +129,10 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None, r
 
     if not all_raw:
         logger.warning("No listings found. Check your filters or try a broader search.")
+        return []
+
+    if stop_check and stop_check():
+        logger.info("Stop requested after scraping — halting pipeline")
         return []
 
     logger.info(f"Total raw listings: {len(all_raw)}")
@@ -239,9 +244,16 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None, r
         )
         scored_listings.append(scored)
         db.upsert_listing(scored)
+        if stop_check and stop_check():
+            logger.info("Stop requested during scoring — halting pipeline")
+            return sort_listings(scored_listings)
 
     # Sort: best deals first
     scored_listings = sort_listings(scored_listings)
+
+    if stop_check and stop_check():
+        logger.info("Stop requested before messaging — halting pipeline")
+        return scored_listings
 
     # ── Step 4: Draft messages ────────────────────────────────────────────────
     logger.info("STEP 4 — Drafting messages for deals")

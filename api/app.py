@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # ── Path setup (so we can import from the project root) ──────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from api.routers import auth as auth_router, users as users_router
+from api.routers import auth as auth_router, users as users_router, admin as admin_router
 
 from config import (FILTERS, LOCATION, MESSAGING, NOTIFICATIONS,
                     OUTPUT, PRICING_SOURCES, SCORING, SOURCES)
@@ -110,6 +110,7 @@ def health():
 # ── User portal routers ───────────────────────────────────────────────────────
 app.include_router(auth_router.router)
 app.include_router(users_router.router)
+app.include_router(admin_router.router)
 
 DB_PATH = OUTPUT.get("db_path", "output/autoscout.db")
 FAV_DB_PATH = "output/favorites.db"
@@ -125,6 +126,8 @@ _pipeline = {
     "last_run": None,
     "last_count": 0,
     "logs": queue.Queue(maxsize=500),
+    "start_time": None,       # datetime when current run started
+    "stop_requested": False,  # set by /api/pipeline/stop
 }
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -135,7 +138,40 @@ def _db():
     return conn
 
 def _rows(rows) -> list[dict]:
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        if "image_urls" in d:
+            import json as _json
+            d["image_urls"] = _json.loads(d["image_urls"] or "[]")
+        out.append(d)
+    return out
+
+
+def _send_email(to: str, subject: str, body: str) -> None:
+    """Send a plain-text email via SMTP. No-ops if SMTP_HOST is not configured."""
+    import smtplib
+    from email.mime.text import MIMEText
+    host  = os.getenv("SMTP_HOST", "")
+    port  = int(os.getenv("SMTP_PORT", "587"))
+    user  = os.getenv("SMTP_USER", "")
+    pw    = os.getenv("SMTP_PASS", "")
+    from_ = os.getenv("FROM_EMAIL", user)
+    if not host or not user:
+        logger.warning("SMTP not configured — skipping email to %s", to)
+        return
+    try:
+        msg = MIMEText(body, "plain")
+        msg["Subject"] = subject
+        msg["From"] = from_
+        msg["To"] = to
+        with smtplib.SMTP(host, port) as s:
+            s.starttls()
+            s.login(user, pw)
+            s.sendmail(from_, [to], msg.as_string())
+        logger.info("Email sent to %s: %s", to, subject)
+    except Exception as e:
+        logger.error("Failed to send email to %s: %s", to, e)
 
 def _db_exists() -> bool:
     return os.path.exists(DB_PATH)
@@ -257,6 +293,7 @@ def get_deal(listing_id: str):
         ).fetchall()
 
     deal = dict(row)
+    deal["image_urls"] = json.loads(deal.get("image_urls") or "[]")
     deal["messages"] = _rows(msgs)
     return deal
 
@@ -315,7 +352,8 @@ def remove_favorite(listing_id: str):
 # ── Carvana Offer Automation ──────────────────────────────────────────────────
 
 @app.post("/api/deals/{listing_id}/carvana-offer")
-def start_carvana_offer(listing_id: str, background_tasks: BackgroundTasks, vin: Optional[str] = None):
+def start_carvana_offer(listing_id: str, background_tasks: BackgroundTasks,
+                        vin: Optional[str] = None, user_id: Optional[int] = None):
     """Kick off the Playwright Carvana sell automation. Accepts optional ?vin= override."""
     listing = None
     if _db_exists():
@@ -345,7 +383,7 @@ def start_carvana_offer(listing_id: str, background_tasks: BackgroundTasks, vin:
         raise HTTPException(400, "No VIN available — paste a VIN in the field and try again")
 
     _offer_jobs[listing_id] = {"status": "running", "offer": None, "error": None, "steps": []}
-    background_tasks.add_task(_run_carvana_offer_bg, listing_id, listing)
+    background_tasks.add_task(_run_carvana_offer_bg, listing_id, listing, user_id)
     return {"status": "started"}
 
 
@@ -354,7 +392,7 @@ def get_carvana_offer_status(listing_id: str):
     return _offer_jobs.get(listing_id, {"status": "not_started"})
 
 
-def _run_carvana_offer_bg(listing_id: str, listing: dict):
+def _run_carvana_offer_bg(listing_id: str, listing: dict, user_id: Optional[int] = None):
     import asyncio as _aio
     from utils.carvana_sell import run_carvana_offer
     try:
@@ -365,6 +403,24 @@ def _run_carvana_offer_bg(listing_id: str, listing: dict):
             description=listing.get("description", "") or "",
         ))
         _offer_jobs[listing_id].update(result)
+        # Email notification
+        if user_id and result.get("status") in ("completed", "error"):
+            try:
+                from utils.user_db import UserDB as _UserDB
+                u = _UserDB().get_user_by_id(user_id)
+                if u and u.get("notify_carvana"):
+                    offer = result.get("offer") or "Not available"
+                    subject = f"Carvana offer ready: {listing.get('title', listing_id)}"
+                    body = (
+                        f"Your Carvana cash offer result:\n\n"
+                        f"Vehicle: {listing.get('title', listing_id)}\n"
+                        f"Offer: {offer}\n"
+                        f"Status: {result.get('status')}\n"
+                        f"{'Error: ' + result['error'] if result.get('error') else ''}\n"
+                    )
+                    _send_email(u["email"], subject, body)
+            except Exception as email_err:
+                logger.warning("Carvana email notification failed: %s", email_err)
     except Exception as e:
         _offer_jobs[listing_id].update({"status": "error", "error": str(e)})
 
@@ -415,11 +471,25 @@ def skip_message(message_id: int):
 
 @app.get("/api/pipeline/status")
 def pipeline_status():
+    elapsed = None
+    if _pipeline["running"] and _pipeline["start_time"]:
+        elapsed = int((datetime.now() - datetime.fromisoformat(_pipeline["start_time"])).total_seconds())
     return {
         "running": _pipeline["running"],
         "last_run": _pipeline["last_run"],
         "last_count": _pipeline["last_count"],
+        "start_time": _pipeline["start_time"],
+        "elapsed_seconds": elapsed,
+        "stop_requested": _pipeline["stop_requested"],
     }
+
+
+@app.post("/api/pipeline/stop")
+def stop_pipeline():
+    if not _pipeline["running"]:
+        raise HTTPException(409, "Pipeline is not running")
+    _pipeline["stop_requested"] = True
+    return {"status": "stop_requested"}
 
 
 @app.post("/api/pipeline/run")
@@ -443,6 +513,8 @@ def run_pipeline_endpoint(
 def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", radius_miles: int = 0):
     _pipeline["running"] = True
     _pipeline["last_run"] = datetime.now().isoformat()
+    _pipeline["start_time"] = datetime.now().isoformat()
+    _pipeline["stop_requested"] = False
 
     handler = _QueueLogHandler(_pipeline["logs"])
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s — %(message)s", "%H:%M:%S"))
@@ -451,15 +523,23 @@ def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", 
 
     try:
         from main import run_pipeline
-        results = run_pipeline(query=query, dry_run=dry_run, zip_code=zip_code or None, radius_miles=radius_miles or None)
+        results = run_pipeline(
+            query=query, dry_run=dry_run,
+            zip_code=zip_code or None, radius_miles=radius_miles or None,
+            stop_check=lambda: _pipeline["stop_requested"],
+        )
         _pipeline["last_count"] = len(results)
-        _pipeline["logs"].put(f"✅ Pipeline complete — {len(results)} listings processed")
+        msg = f"⛔ Pipeline stopped — {len(results)} listings processed" if _pipeline["stop_requested"] \
+              else f"✅ Pipeline complete — {len(results)} listings processed"
+        _pipeline["logs"].put(msg)
     except Exception as e:
         _pipeline["logs"].put(f"❌ Pipeline error: {e}")
         logging.exception("Pipeline background task failed")
     finally:
         root.removeHandler(handler)
         _pipeline["running"] = False
+        _pipeline["start_time"] = None
+        _pipeline["stop_requested"] = False
 
 
 class _QueueLogHandler(logging.Handler):

@@ -6,6 +6,8 @@ const USER_KEY = "autoscout_user";
 export interface AuthUser {
   id: number;
   email: string;
+  role: string;
+  notify_carvana: boolean;
   created_at: string;
 }
 

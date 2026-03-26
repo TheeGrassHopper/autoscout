@@ -35,6 +35,7 @@ export interface Deal {
   posted_date: string | null;
   first_seen: string;
   last_seen: string;
+  image_urls: string[];
 }
 
 export interface Stats {
@@ -70,6 +71,13 @@ export interface PipelineStatus {
   running: boolean;
   last_run: string | null;
   last_count: number;
+  start_time: string | null;
+  elapsed_seconds: number | null;
+  stop_requested: boolean;
+}
+
+export async function stopPipeline(): Promise<void> {
+  await fetch(`${BASE}/api/pipeline/stop`, { method: "POST", headers: authHeaders() });
 }
 
 export async function getStats(): Promise<Stats> {
@@ -144,19 +152,14 @@ export async function runPipeline(query = "", dryRun = true, zipCode = "", radiu
 
 // ── User portal ───────────────────────────────────────────────────────────────
 
-import { getToken } from "@/lib/auth";
+import { getToken, type AuthUser } from "@/lib/auth";
+export type { AuthUser };
 
 function userHeaders(): HeadersInit {
   const h: Record<string, string> = { ...(authHeaders() as Record<string, string>) };
   const token = getToken();
   if (token) h["Authorization"] = `Bearer ${token}`;
   return h;
-}
-
-export interface AuthUser {
-  id: number;
-  email: string;
-  created_at: string;
 }
 
 export async function apiRegister(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
@@ -251,4 +254,62 @@ export async function addUserFavorite(userId: number, deal: Deal): Promise<void>
 
 export async function removeUserFavorite(userId: number, listingId: string): Promise<void> {
   await fetch(`${BASE}/users/${userId}/favorites/${listingId}`, { method: "DELETE", headers: userHeaders() });
+}
+
+// ── User profile ──────────────────────────────────────────────────────────────
+
+export interface UserProfile {
+  id: number;
+  email: string;
+  role: string;
+  notify_carvana: boolean;
+  created_at: string;
+}
+
+export async function getUserProfile(userId: number): Promise<UserProfile> {
+  const res = await fetch(`${BASE}/users/${userId}`, { cache: "no-store", headers: userHeaders() });
+  if (!res.ok) throw new Error("Failed to load profile");
+  return res.json();
+}
+
+export async function updateUserProfile(userId: number, data: { email?: string; notify_carvana?: boolean }): Promise<UserProfile> {
+  const res = await fetch(`${BASE}/users/${userId}`, {
+    method: "PATCH",
+    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to update profile");
+  return res.json();
+}
+
+// ── Admin ─────────────────────────────────────────────────────────────────────
+
+export async function adminGetUsers(): Promise<UserProfile[]> {
+  const res = await fetch(`${BASE}/admin/users`, { cache: "no-store", headers: userHeaders() });
+  if (!res.ok) throw new Error("Admin access required");
+  return res.json();
+}
+
+export async function adminUpdateUser(id: number, data: { role?: string; notify_carvana?: boolean; email?: string }): Promise<UserProfile> {
+  const res = await fetch(`${BASE}/admin/users/${id}`, {
+    method: "PATCH",
+    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to update user");
+  return res.json();
+}
+
+export async function adminDeleteUser(id: number): Promise<void> {
+  await fetch(`${BASE}/admin/users/${id}`, { method: "DELETE", headers: userHeaders() });
+}
+
+export async function adminGetUserSearches(id: number): Promise<SavedSearch[]> {
+  const res = await fetch(`${BASE}/admin/users/${id}/searches`, { cache: "no-store", headers: userHeaders() });
+  return res.json();
+}
+
+export async function adminGetUserFavorites(id: number): Promise<Deal[]> {
+  const res = await fetch(`${BASE}/admin/users/${id}/favorites`, { cache: "no-store", headers: userHeaders() });
+  return res.json();
 }

@@ -5,20 +5,26 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { type AuthUser, clearAuth, getUser } from "@/lib/auth";
 
-const nav = [
+const baseNav = [
   { href: "/", label: "Dashboard", icon: "⚡" },
   { href: "/deals", label: "Deals", icon: "🔍" },
   { href: "/searches", label: "Searches", icon: "🔖" },
   { href: "/messages", label: "Messages", icon: "💬" },
+  { href: "/profile", label: "Profile", icon: "👤" },
 ];
 
 export default function Sidebar() {
   const path = usePathname();
   const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [nav, setNav] = useState(baseNav);
 
   useEffect(() => {
-    setUser(getUser());
+    const u = getUser();
+    setUser(u);
+    if (u?.role === "admin") {
+      setNav([...baseNav, { href: "/admin", label: "Admin", icon: "🛡️" }]);
+    }
   }, []);
 
   const logout = () => {

@@ -163,3 +163,25 @@ def remove_favorite(user_id: int, listing_id: str, user: dict = Depends(current_
     _require_self(user_id, user)
     if not _user_db.remove_favorite(user_id, listing_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Favorite not found")
+
+
+# ── Profile ───────────────────────────────────────────────────────────────────
+
+class UpdateProfileRequest(BaseModel):
+    email: Optional[str] = None
+    notify_carvana: Optional[bool] = None
+
+
+@router.get("/{user_id}")
+def get_profile(user_id: int, user: dict = Depends(current_user)):
+    _require_self(user_id, user)
+    return user  # already safe (no password), includes role + notify_carvana
+
+
+@router.patch("/{user_id}")
+def update_profile(user_id: int, body: UpdateProfileRequest, user: dict = Depends(current_user)):
+    _require_self(user_id, user)
+    updated = _user_db.update_user(user_id, email=body.email, notify_carvana=body.notify_carvana)
+    if not updated:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    return updated

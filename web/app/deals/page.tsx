@@ -215,6 +215,64 @@ function CarvanaOfferSection({ deal }: { deal: Deal }) {
   );
 }
 
+// ── Image Gallery ─────────────────────────────────────────────────────────────
+
+function ImageGallery({ urls }: { urls: string[] }) {
+  const [lightbox, setLightbox] = useState<number | null>(null);
+
+  return (
+    <>
+      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+        {urls.map((url, i) => (
+          <img
+            key={i}
+            src={url}
+            alt={`Listing image ${i + 1}`}
+            referrerPolicy="no-referrer"
+            onClick={() => setLightbox(i)}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            className="h-28 w-40 object-cover rounded-lg flex-shrink-0 cursor-pointer hover:opacity-90 transition-opacity border border-gray-100"
+          />
+        ))}
+      </div>
+
+      {lightbox !== null && (
+        <div
+          className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center"
+          onClick={() => setLightbox(null)}
+        >
+          <button
+            className="absolute top-4 right-4 text-white text-2xl hover:opacity-70"
+            onClick={() => setLightbox(null)}
+          >✕</button>
+          {lightbox > 0 && (
+            <button
+              className="absolute left-4 text-white text-3xl hover:opacity-70 px-2"
+              onClick={(e) => { e.stopPropagation(); setLightbox(lightbox - 1); }}
+            >‹</button>
+          )}
+          <img
+            src={urls[lightbox]}
+            alt={`Image ${lightbox + 1}`}
+            referrerPolicy="no-referrer"
+            className="max-h-[85vh] max-w-[90vw] object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+          {lightbox < urls.length - 1 && (
+            <button
+              className="absolute right-4 text-white text-3xl hover:opacity-70 px-2"
+              onClick={(e) => { e.stopPropagation(); setLightbox(lightbox + 1); }}
+            >›</button>
+          )}
+          <div className="absolute bottom-4 text-white text-sm opacity-60">
+            {lightbox + 1} / {urls.length}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
   const savings = deal.savings ?? (deal.kbb_value ? deal.kbb_value - deal.asking_price : null);
 
@@ -243,6 +301,13 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl flex-shrink-0">✕</button>
         </div>
+
+        {/* Image gallery */}
+        {deal.image_urls && deal.image_urls.length > 0 ? (
+          <ImageGallery urls={deal.image_urls} />
+        ) : (
+          <div className="text-xs text-slate-400 italic">No images found</div>
+        )}
 
         {/* Price grid */}
         <div className="grid grid-cols-2 gap-2 md:gap-3">

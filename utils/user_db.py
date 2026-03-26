@@ -5,6 +5,7 @@ Separate from autoscout.db so user data survives database resets.
 """
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -43,7 +44,9 @@ class UserDB:
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
                     email           TEXT UNIQUE NOT NULL,
                     hashed_password TEXT NOT NULL,
-                    created_at      TEXT NOT NULL
+                    created_at      TEXT NOT NULL,
+                    role            TEXT NOT NULL DEFAULT 'user',
+                    notify_carvana  INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS saved_searches (
@@ -72,33 +75,92 @@ class UserDB:
                     UNIQUE(user_id, listing_id)
                 );
             """)
+        # Migrate existing DBs — add new columns if missing
+        with self._conn() as conn:
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+            for col, defn in [
+                ("role",           "TEXT    NOT NULL DEFAULT 'user'"),
+                ("notify_carvana", "INTEGER NOT NULL DEFAULT 0"),
+            ]:
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE users ADD COLUMN {col} {defn}")
 
     # ── Users ────────────────────────────────────────────────────────────────
 
+    def _safe_user(self, row) -> dict:
+        """Return user dict without hashed_password, with bool coercion."""
+        d = dict(row)
+        d.pop("hashed_password", None)
+        d["notify_carvana"] = bool(d.get("notify_carvana", 0))
+        return d
+
     def create_user(self, email: str, hashed_password: str) -> dict:
+        admin_email = os.getenv("ADMIN_EMAIL", "").lower().strip()
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO users (email, hashed_password, created_at) VALUES (?, ?, ?)",
                 (email.lower().strip(), hashed_password, _now()),
             )
+            uid = cur.lastrowid
+            # First user ever OR matches ADMIN_EMAIL env var → make admin
+            total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            if total == 1 or (admin_email and email.lower().strip() == admin_email):
+                conn.execute("UPDATE users SET role='admin' WHERE id=?", (uid,))
             row = conn.execute(
-                "SELECT id, email, created_at FROM users WHERE id = ?", (cur.lastrowid,)
+                "SELECT id, email, role, notify_carvana, created_at FROM users WHERE id = ?", (uid,)
             ).fetchone()
-            return dict(row)
+            return self._safe_user(row)
 
     def get_user_by_email(self, email: str) -> Optional[dict]:
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM users WHERE email = ?", (email.lower().strip(),)
             ).fetchone()
-            return dict(row) if row else None
+            return dict(row) if row else None  # includes hashed_password (needed for auth)
 
     def get_user_by_id(self, user_id: int) -> Optional[dict]:
+        """Returns safe profile (no password). Includes role for auth dependency."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT id, email, created_at FROM users WHERE id = ?", (user_id,)
+                "SELECT id, email, role, notify_carvana, created_at FROM users WHERE id = ?", (user_id,)
             ).fetchone()
-            return dict(row) if row else None
+            return self._safe_user(row) if row else None
+
+    def update_user(self, user_id: int, email: Optional[str] = None,
+                    notify_carvana: Optional[bool] = None) -> Optional[dict]:
+        fields, params = [], []
+        if email is not None:
+            fields.append("email = ?")
+            params.append(email.lower().strip())
+        if notify_carvana is not None:
+            fields.append("notify_carvana = ?")
+            params.append(1 if notify_carvana else 0)
+        if not fields:
+            return self.get_user_by_id(user_id)
+        params.append(user_id)
+        with self._conn() as conn:
+            conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", params)
+            row = conn.execute(
+                "SELECT id, email, role, notify_carvana, created_at FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            return self._safe_user(row) if row else None
+
+    def list_users(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, email, role, notify_carvana, created_at FROM users ORDER BY created_at"
+            ).fetchall()
+            return [self._safe_user(r) for r in rows]
+
+    def set_user_role(self, user_id: int, role: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+            return cur.rowcount > 0
+
+    def delete_user(self, user_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+            return cur.rowcount > 0
 
     # ── Saved Searches ───────────────────────────────────────────────────────
 
