@@ -477,6 +477,10 @@ def run_pipeline_endpoint(
     zip_code: str = "",
     radius_miles: int = 0,
     include_facebook: bool = True,
+    min_year: int = 0,
+    max_year: int = 0,
+    max_price: int = 0,
+    max_mileage: int = 0,
 ):
     if _pipeline["running"]:
         raise HTTPException(409, "Pipeline already running")
@@ -485,11 +489,15 @@ def run_pipeline_endpoint(
         query=query, dry_run=dry_run,
         zip_code=zip_code, radius_miles=radius_miles,
         include_facebook=include_facebook,
+        min_year=min_year, max_year=max_year,
+        max_price=max_price, max_mileage=max_mileage,
     )
     return {"status": "started"}
 
 
-def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", radius_miles: int = 0, include_facebook: bool = True):
+def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", radius_miles: int = 0,
+                     include_facebook: bool = True, min_year: int = 0, max_year: int = 0,
+                     max_price: int = 0, max_mileage: int = 0):
     _pipeline["running"] = True
     _pipeline["last_run"] = datetime.now().isoformat()
     _pipeline["start_time"] = datetime.now().isoformat()
@@ -507,6 +515,8 @@ def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", 
             zip_code=zip_code or None, radius_miles=radius_miles or None,
             stop_check=lambda: _pipeline["stop_requested"],
             include_facebook=include_facebook,
+            min_year=min_year or None, max_year=max_year or None,
+            max_price=max_price or None, max_mileage=max_mileage or None,
         )
         _pipeline["last_count"] = len(results)
         msg = f"⛔ Pipeline stopped — {len(results)} listings processed" if _pipeline["stop_requested"] \

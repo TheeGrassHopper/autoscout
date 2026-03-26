@@ -6,6 +6,7 @@ import {
   type Deal,
   type PipelineStatus,
   type Stats,
+  type RunFilters,
   getDeals,
   getPipelineStatus,
   getStats,
@@ -65,6 +66,10 @@ function PipelinePanel() {
   const [radius, setRadius] = useState("100");
   const [dryRun, setDryRun] = useState(true);
   const [includeFb, setIncludeFb] = useState(true);
+  const [minYear, setMinYear] = useState("2009");
+  const [maxYear, setMaxYear] = useState("2025");
+  const [maxPrice, setMaxPrice] = useState("40000");
+  const [maxMileage, setMaxMileage] = useState("190000");
   const [logs, setLogs] = useState<string[]>([]);
   const logsRef = useRef<HTMLDivElement>(null);
 
@@ -98,7 +103,13 @@ function PipelinePanel() {
 
   const start = async () => {
     setLogs([]);
-    await runPipeline(query, dryRun, zipCode, parseInt(radius) || 0, includeFb);
+    const filters: RunFilters = {
+      minYear:    parseInt(minYear)    || undefined,
+      maxYear:    parseInt(maxYear)    || undefined,
+      maxPrice:   parseInt(maxPrice)   || undefined,
+      maxMileage: parseInt(maxMileage) || undefined,
+    };
+    await runPipeline(query, dryRun, zipCode, parseInt(radius) || 0, includeFb, filters);
     setStatus((s) => ({ ...s, running: true }));
   };
 
@@ -169,6 +180,44 @@ function PipelinePanel() {
             />
           </div>
 
+        </div>
+
+        {/* Filters row */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="flex items-center gap-1.5">
+            <label className="text-xs text-slate-500 whitespace-nowrap">Year</label>
+            <input
+              type="number" className="w-20 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
+              value={minYear} onChange={(e) => setMinYear(e.target.value)}
+              disabled={status.running} min={1990} max={2030} placeholder="2009"
+            />
+            <span className="text-xs text-slate-400">–</span>
+            <input
+              type="number" className="w-20 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
+              value={maxYear} onChange={(e) => setMaxYear(e.target.value)}
+              disabled={status.running} min={1990} max={2030} placeholder="2025"
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label className="text-xs text-slate-500 whitespace-nowrap">Max $</label>
+            <input
+              type="number" className="w-24 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
+              value={maxPrice} onChange={(e) => setMaxPrice(e.target.value)}
+              disabled={status.running} min={0} step={1000} placeholder="40000"
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label className="text-xs text-slate-500 whitespace-nowrap">Max mi</label>
+            <input
+              type="number" className="w-24 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
+              value={maxMileage} onChange={(e) => setMaxMileage(e.target.value)}
+              disabled={status.running} min={0} step={10000} placeholder="190000"
+            />
+          </div>
+        </div>
+
+        {/* Checkboxes + action buttons row */}
+        <div className="flex flex-wrap gap-2 items-center">
           <div className="flex-1" />
 
           <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">

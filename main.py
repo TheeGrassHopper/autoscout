@@ -64,7 +64,9 @@ from utils.notifier import Notifier
 
 def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
                  radius_miles: int = None, stop_check=None,
-                 include_facebook: bool = True) -> list[ScoredListing]:
+                 include_facebook: bool = True,
+                 min_year: int = None, max_year: int = None,
+                 max_price: int = None, max_mileage: int = None) -> list[ScoredListing]:
     """
     Execute the full AutoScout pipeline.
     Returns a list of scored listings.
@@ -72,14 +74,22 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
     start = time.time()
     os.makedirs("output/.price_cache", exist_ok=True)
 
-    logger.info("=" * 60)
-    logger.info("AutoScout AI — Starting pipeline")
-    # Runtime overrides from the UI
+    # Merge config defaults with runtime overrides
     effective_zip = zip_code or LOCATION.get("zip_code", "85001")
     effective_radius = radius_miles or LOCATION.get("search_radius_miles", 50)
+    effective_filters = {
+        **FILTERS,
+        "min_year":    min_year    or FILTERS["min_year"],
+        "max_year":    max_year    or FILTERS["max_year"],
+        "max_price":   max_price   or FILTERS["max_price"],
+        "max_mileage": max_mileage or FILTERS["max_mileage"],
+    }
+
+    logger.info("=" * 60)
+    logger.info("AutoScout AI — Starting pipeline")
     logger.info(f"Location: {LOCATION['city']} | zip {effective_zip} | {effective_radius}mi radius")
-    logger.info(f"Filters: year {FILTERS['min_year']}–{FILTERS['max_year']}, "
-                f"max ${FILTERS['max_price']:,}, max {FILTERS['max_mileage']:,}mi")
+    logger.info(f"Filters: year {effective_filters['min_year']}–{effective_filters['max_year']}, "
+                f"max ${effective_filters['max_price']:,}, max {effective_filters['max_mileage']:,}mi")
     logger.info("=" * 60)
 
     # ── Step 1: Scrape listings ───────────────────────────────────────────────
@@ -92,7 +102,7 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
     if SOURCES.get("craigslist"):
         scraper = CraigslistScraper(
             city=LOCATION["city"],
-            config={**FILTERS, "search_radius_miles": effective_radius, "zip_code": effective_zip},
+            config={**effective_filters, "search_radius_miles": effective_radius, "zip_code": effective_zip},
             vehicle_types=VEHICLE_TYPES,
         )
         cl_listings = scraper.scrape(query=query)
@@ -124,9 +134,9 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
         fb_listings = scrape_facebook(
             location=LOCATION["city"],
             keywords=[k for k in keywords if k],
-            min_price=FILTERS["min_price"],
-            max_price=FILTERS["max_price"],
-            max_mileage=FILTERS["max_mileage"],
+            min_price=effective_filters["min_price"],
+            max_price=effective_filters["max_price"],
+            max_mileage=effective_filters["max_mileage"],
             radius_miles=effective_radius,
             apify_token=apify_token,
             seen_ids=seen_ids,
