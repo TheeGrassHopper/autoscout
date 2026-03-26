@@ -172,6 +172,23 @@ export async function apiRegister(email: string, password: string): Promise<{ to
   return res.json();
 }
 
+export async function apiForgotPassword(email: string): Promise<void> {
+  await fetch(`${BASE}/auth/forgot-password`, {
+    method: "POST",
+    headers: { ...authHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function apiResetPassword(token: string, password: string): Promise<void> {
+  const res = await fetch(`${BASE}/auth/reset-password`, {
+    method: "POST",
+    headers: { ...authHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify({ token, password }),
+  });
+  if (!res.ok) throw new Error((await res.json()).detail ?? "Reset failed");
+}
+
 export async function apiLogin(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
   const res = await fetch(`${BASE}/auth/login`, {
     method: "POST",

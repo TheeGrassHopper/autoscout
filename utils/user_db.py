@@ -6,9 +6,10 @@ Separate from autoscout.db so user data survives database resets.
 
 import json
 import os
+import secrets
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -73,6 +74,14 @@ class UserDB:
                     listing_data TEXT NOT NULL,
                     saved_at     TEXT NOT NULL,
                     UNIQUE(user_id, listing_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token      TEXT UNIQUE NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used       INTEGER NOT NULL DEFAULT 0
                 );
             """)
         # Migrate existing DBs — add new columns if missing
@@ -259,3 +268,47 @@ class UserDB:
                 (user_id, listing_id),
             )
             return cur.rowcount > 0
+
+    # ── Password Reset ────────────────────────────────────────────────────────
+
+    def create_reset_token(self, user_id: int) -> str:
+        """Generate a secure single-use reset token valid for 1 hour."""
+        token = secrets.token_urlsafe(32)
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (?, ?, ?)",
+                (user_id, token, expires_at),
+            )
+        return token
+
+    def get_reset_token(self, token: str) -> Optional[dict]:
+        """Return token row if it exists, is unused, and has not expired."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0",
+                (token,),
+            ).fetchone()
+            if not row:
+                return None
+            row = dict(row)
+            expires_at = datetime.fromisoformat(row["expires_at"])
+            if expires_at < datetime.now(timezone.utc):
+                return None
+            return row
+
+    def consume_reset_token(self, token: str, new_hashed_password: str) -> bool:
+        """Mark token used and update the user's password atomically."""
+        row = self.get_reset_token(token)
+        if not row:
+            return False
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE users SET hashed_password = ? WHERE id = ?",
+                (new_hashed_password, row["user_id"]),
+            )
+            conn.execute(
+                "UPDATE password_reset_tokens SET used = 1 WHERE token = ?",
+                (token,),
+            )
+        return True

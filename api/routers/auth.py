@@ -1,7 +1,8 @@
 """
-api/routers/auth.py — Register + login endpoints returning JWT tokens.
+api/routers/auth.py — Register, login, forgot/reset password endpoints.
 """
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -13,6 +14,9 @@ from jose import jwt
 from pydantic import BaseModel
 
 from utils.user_db import UserDB
+from utils.email import send_email
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 _db = UserDB()
@@ -76,3 +80,50 @@ async def login(body: LoginRequest):
     safe_user = {k: v for k, v in user.items() if k != "hashed_password"}
     token = make_token(user["id"], user["email"])
     return {"token": token, "user": safe_user}
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    password: str
+
+
+@router.post("/forgot-password", status_code=202)
+async def forgot_password(body: ForgotPasswordRequest):
+    """
+    Always returns 202 regardless of whether the email exists
+    (prevents user enumeration).
+    """
+    user = _db.get_user_by_email(body.email)
+    if user:
+        reset_token = _db.create_reset_token(user["id"])
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        reset_link = f"{frontend_url}/reset-password?token={reset_token}"
+        logger.info("Password reset token for %s: %s", body.email, reset_token)
+        send_email(
+            to=user["email"],
+            subject="AutoScout AI — Reset your password",
+            body=(
+                f"Hi,\n\n"
+                f"You requested a password reset for your AutoScout AI account.\n\n"
+                f"Click the link below to set a new password (expires in 1 hour):\n\n"
+                f"{reset_link}\n\n"
+                f"If you did not request this, you can safely ignore this email.\n\n"
+                f"— AutoScout AI"
+            ),
+        )
+    return {"detail": "If that email is registered, a reset link has been sent."}
+
+
+@router.post("/reset-password")
+async def reset_password(body: ResetPasswordRequest):
+    if len(body.password) < 6:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password must be at least 6 characters")
+    new_hash = _hash(body.password)
+    ok = _db.consume_reset_token(body.token, new_hash)
+    if not ok:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Reset link is invalid or has expired")
+    return {"detail": "Password updated. You can now sign in."}
