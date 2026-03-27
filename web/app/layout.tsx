@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
 import AuthGuard from "@/components/AuthGuard";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 export const metadata: Metadata = {
   title: "AutoScout AI",
@@ -20,6 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           {/* pb-16 reserves space for the mobile bottom tab bar */}
           <main className="flex-1 overflow-auto pb-16 md:pb-0">{children}</main>
         </AuthGuard>
+        <SpeedInsights />
       </body>
     </html>
   );
