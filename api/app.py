@@ -549,15 +549,16 @@ def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", 
     root.addHandler(handler)
 
     try:
+        import asyncio
         from main import run_pipeline
-        results = run_pipeline(
+        results = asyncio.run(run_pipeline(
             query=query, dry_run=dry_run,
             zip_code=zip_code or None, radius_miles=radius_miles or None,
             stop_check=lambda: _pipeline["stop_requested"],
             include_facebook=include_facebook,
             min_year=min_year or None, max_year=max_year or None,
             max_price=max_price or None, max_mileage=max_mileage or None,
-        )
+        ))
         _pipeline["last_count"] = len(results)
         msg = f"⛔ Pipeline stopped — {len(results)} listings processed" if _pipeline["stop_requested"] \
               else f"✅ Pipeline complete — {len(results)} listings processed"

@@ -125,9 +125,13 @@ class ScoredListing:
     savings_pct: Optional[float] = None
 
     # Flip-specific
-    profit_estimate: Optional[int] = None     # carvana_retail - asking_price
-    profit_margin_pct: Optional[float] = None # profit / carvana_retail
-    demand_score: int = 0                     # 0–100 how fast/easy to resell
+    profit_estimate: Optional[int] = None       # carvana_retail - asking_price
+    profit_margin_pct: Optional[float] = None   # profit / carvana_retail
+    demand_score: int = 0                       # 0–100 how fast/easy to resell
+
+    # Carvana cash offer (from sell-my-car automation — requires VIN)
+    carvana_offer: Optional[int] = None         # what Carvana will pay YOU for the car
+    carvana_offer_margin: Optional[float] = None  # (offer - asking) / asking; positive = guaranteed profit
 
     # Score
     total_score: int = 0
@@ -295,6 +299,56 @@ class DealScorer:
         return scored
 
     # ── Sub-scorers ───────────────────────────────────────────────────────────
+
+    def apply_carvana_offer(self, scored: ScoredListing, offer: int) -> ScoredListing:
+        """
+        Enrich a ScoredListing with a real Carvana cash offer and re-evaluate.
+
+        Logic:
+          offer >= asking            → guaranteed flip; override to "great", score 95+
+          offer >= asking * 0.90     → strong deal; ensure at least "great"
+          offer >= asking * 0.80     → decent margin; ensure at least "fair"
+          offer <  asking * 0.70     → Carvana doesn't want it at this price; don't penalize
+                                       (other sources may still show value)
+        """
+        scored.carvana_offer = offer
+        if scored.asking_price:
+            scored.carvana_offer_margin = (offer - scored.asking_price) / scored.asking_price
+
+        margin = scored.carvana_offer_margin or 0.0
+
+        if margin >= 0.0:
+            # Guaranteed profit — Carvana will pay more than asking price
+            scored.deal_class = "great"
+            scored.total_score = max(scored.total_score, 95)
+            logger.info(
+                f"[CarvanaOffer] Guaranteed flip: offer ${offer:,} >= ask "
+                f"${scored.asking_price:,} (+{margin:.0%}) → GREAT"
+            )
+        elif margin >= -0.10:
+            # Within 10% — strong deal
+            scored.deal_class = "great"
+            scored.total_score = max(scored.total_score, 78)
+            logger.info(
+                f"[CarvanaOffer] Strong deal: offer ${offer:,} vs ask "
+                f"${scored.asking_price:,} ({margin:.0%}) → GREAT"
+            )
+        elif margin >= -0.20:
+            # Within 20% — fair deal
+            if scored.deal_class == "poor":
+                scored.deal_class = "fair"
+                scored.total_score = max(scored.total_score, 55)
+            logger.info(
+                f"[CarvanaOffer] Decent margin: offer ${offer:,} vs ask "
+                f"${scored.asking_price:,} ({margin:.0%}) → at least FAIR"
+            )
+        else:
+            logger.info(
+                f"[CarvanaOffer] Low offer: ${offer:,} vs ask ${scored.asking_price:,} "
+                f"({margin:.0%}) — no upgrade"
+            )
+
+        return scored
 
     def _score_profit_margin(self, s: ScoredListing) -> int:
         """

@@ -62,7 +62,7 @@ from utils.notifier import Notifier
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
-def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
+async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
                  radius_miles: int = None, stop_check=None,
                  include_facebook: bool = True,
                  min_year: int = None, max_year: int = None,
@@ -266,6 +266,20 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
             logger.info("Stop requested during scoring — halting pipeline")
             return sort_listings(scored_listings)
 
+    # ── Step 3.5: Carvana cash offer enrichment (VIN listings only) ──────────
+    if PRICING_SOURCES.get("carvana_offer_flow") and any(s.vin for s in scored_listings):
+        candidates = [
+            s for s in scored_listings
+            if s.vin and s.deal_class in ("fair", "great")
+        ]
+        if candidates:
+            logger.info(
+                f"STEP 3.5 — Carvana offer flow for {len(candidates)} VIN listing(s)"
+            )
+            scored_listings = await _enrich_with_carvana_offers(
+                scored_listings, candidates, scorer, db
+            )
+
     # Sort: best deals first
     scored_listings = sort_listings(scored_listings)
 
@@ -327,6 +341,49 @@ def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = None,
     return scored_listings
 
 
+async def _enrich_with_carvana_offers(
+    all_listings: list,
+    candidates: list,
+    scorer,
+    db,
+    max_concurrent: int = 2,
+) -> list:
+    """
+    Run the Carvana sell-my-car offer flow in parallel for candidate listings.
+    Updates each listing's carvana_offer + deal_class in-place, re-saves to DB.
+    max_concurrent: how many browser sessions to run at once (keep low to avoid blocks).
+    """
+    from utils.carvana_sell import run_carvana_offer
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def fetch_offer(scored):
+        async with semaphore:
+            try:
+                result = await run_carvana_offer(
+                    vin=scored.vin,
+                    mileage=scored.mileage or 50000,
+                    title=scored.title,
+                    description=scored.description,
+                )
+                offer_str = result.get("offer")
+                if offer_str:
+                    # Parse "$X,XXX" → int
+                    offer_int = int(offer_str.replace("$", "").replace(",", ""))
+                    scorer.apply_carvana_offer(scored, offer_int)
+                    db.upsert_listing(scored)
+                else:
+                    logger.debug(
+                        f"[CarvanaOffer] No offer returned for {scored.vin} "
+                        f"({result.get('status')}: {result.get('error')})"
+                    )
+            except Exception as e:
+                logger.warning(f"[CarvanaOffer] Enrichment failed for {scored.vin}: {e}")
+
+    await asyncio.gather(*[fetch_offer(s) for s in candidates])
+    return all_listings
+
+
 def export_csv(listings: list[ScoredListing]):
     """Write all scored listings to a CSV file."""
     if not listings:
@@ -372,17 +429,17 @@ def main():
         interval_hours = 1
         logger.info(f"Scheduled mode: running every {interval_hours} hour(s)")
 
-        sched.every(interval_hours).hours.do(
-            run_pipeline, query=args.query, dry_run=args.dry_run
-        )
+        def _run():
+            asyncio.run(run_pipeline(query=args.query, dry_run=args.dry_run))
 
-        run_pipeline(query=args.query, dry_run=args.dry_run)
+        sched.every(interval_hours).hours.do(_run)
+        _run()
 
         while True:
             sched.run_pending()
             time.sleep(60)
     else:
-        run_pipeline(query=args.query, dry_run=args.dry_run)
+        asyncio.run(run_pipeline(query=args.query, dry_run=args.dry_run))
 
 
 if __name__ == "__main__":

@@ -57,7 +57,9 @@ class Database:
                     title_status        TEXT,
                     posted_date         TEXT,
                     first_seen          TEXT,
-                    last_seen           TEXT
+                    last_seen           TEXT,
+                    carvana_offer       INTEGER,
+                    carvana_offer_margin {_REAL}
                 )
             """)
             conn.execute(f"""
@@ -91,6 +93,8 @@ class Database:
                 ("title_status",         "TEXT"),
                 ("posted_date",          "TEXT"),
                 ("image_urls",           "TEXT"),
+                ("carvana_offer",        "INTEGER"),
+                ("carvana_offer_margin", _REAL),
             ]:
                 if not column_exists(conn, "listings", col):
                     conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
@@ -108,8 +112,9 @@ class Database:
                      carvana_value, local_market_value, blended_market_value,
                      profit_estimate, profit_margin_pct, demand_score,
                      savings, total_score, deal_class, make, model, year, mileage,
-                     location, vin, title_status, posted_date, image_urls, first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     location, vin, title_status, posted_date, image_urls,
+                     carvana_offer, carvana_offer_margin, first_seen, last_seen)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(listing_id) DO UPDATE SET
                     kbb_value=excluded.kbb_value,
                     carvana_value=excluded.carvana_value,
@@ -122,6 +127,8 @@ class Database:
                     total_score=excluded.total_score,
                     deal_class=excluded.deal_class,
                     image_urls=excluded.image_urls,
+                    carvana_offer=excluded.carvana_offer,
+                    carvana_offer_margin=excluded.carvana_offer_margin,
                     last_seen=excluded.last_seen
             """, (
                 scored_listing.listing_id,
@@ -148,6 +155,8 @@ class Database:
                 getattr(scored_listing, "title_status", None),
                 scored_listing.posted_date,
                 image_urls_json,
+                scored_listing.carvana_offer,
+                scored_listing.carvana_offer_margin,
                 now, now,
             ))
 

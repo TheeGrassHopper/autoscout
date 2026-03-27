@@ -63,6 +63,10 @@ PRICING_SOURCES = {
     "kbb": True,
     "carvana": True,        # Enabled — scrapes Carvana for comparable prices
     "carmax": True,         # Enabled — scrapes CarMax for comparable prices
+    # Carvana cash offer flow: runs the full sell-my-car automation for listings
+    # that have a VIN and score fair/great. SLOW (~2 min/VIN), runs in parallel.
+    # Only enable if you want guaranteed exit price validation per listing.
+    "carvana_offer_flow": False,
 }
 
 # ── MESSAGING ────────────────────────────────────────────────────────────────
