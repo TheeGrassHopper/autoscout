@@ -51,7 +51,7 @@ from config import (
 )
 from scrapers.craigslist import CraigslistScraper
 from scrapers.facebook import scrape_facebook
-from pricing.kbb import KBBPricer
+from pricing.kbb import PriceEstimate as _PE  # noqa: used by _fetch_prices closure
 from pricing.carvana import get_carvana_price
 from pricing.carmax import get_carmax_price
 from pricing.vinaudit import get_vinaudit_price
@@ -184,8 +184,6 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     # ── Step 2: Price lookups ─────────────────────────────────────────────────
     logger.info("STEP 2 — Fetching market values (Carvana + Local Market + KBB)")
 
-    # KBBPricer is kept only as last-resort fallback (depreciation model, no web scraping)
-    kbb_fallback = KBBPricer()
     use_carvana = PRICING_SOURCES.get("carvana", False)
     use_carmax = PRICING_SOURCES.get("carmax", False)
     use_vinaudit  = PRICING_SOURCES.get("vinaudit", False)  and bool(os.getenv("VINAUDIT_API_KEY"))
@@ -210,8 +208,6 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
         D: Fetch all price sources for one listing in parallel threads.
         Returns (price_est, carvana_price, carmax_price, local_mkt_price).
         """
-        from pricing.kbb import PriceEstimate as PE
-
         mileage = raw.mileage or 50000
         has_vehicle = raw.make and raw.model and raw.year
 
@@ -258,17 +254,14 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
             carvana_price, carvana_kbb = carvana_result
 
         # Priority: VinAudit (VIN, high) > KBB/Apify (real KBB, high) > CarsXE (medium)
-        # > depreciation model (last resort, low confidence)
         if va_result and va_result.fair_market_value:
             price_est = va_result
         elif kbb_result and kbb_result.fair_market_value:
             price_est = kbb_result
         elif cx_result and cx_result.fair_market_value:
             price_est = cx_result
-        elif has_vehicle:
-            price_est = kbb_fallback._fallback_estimate(raw.year, raw.make, raw.model, mileage)
-
-        if carvana_kbb and (price_est is None or price_est.source == "kbb_estimate"):
+        if carvana_kbb and price_est is None:
+            from pricing.kbb import PriceEstimate as PE
             price_est = PE(
                 source="carvana_kbb", make=raw.make, model=raw.model,
                 year=raw.year, mileage=mileage,

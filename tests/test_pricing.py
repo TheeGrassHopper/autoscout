@@ -251,22 +251,3 @@ class TestCarvanaFiltering:
         # With no metadata, no filtering is applied — returns median of all
         assert price == 11_500
 
-
-# ── KBB cache ─────────────────────────────────────────────────────────────────
-
-class TestKBBCache:
-
-    def test_same_vehicle_same_result_twice(self):
-        """Second call should return cached estimate, same value as first."""
-        from pricing.kbb import KBBPricer
-        pricer = KBBPricer()
-        est1 = pricer.get_price(year=2021, make="Toyota", model="Tacoma", mileage=55555)
-        est2 = pricer.get_price(year=2021, make="Toyota", model="Tacoma", mileage=55555)
-        assert est1.fair_market_value == est2.fair_market_value
-
-    def test_different_mileage_different_result(self):
-        from pricing.kbb import KBBPricer
-        pricer = KBBPricer()
-        est_low = pricer.get_price(year=2021, make="Toyota", model="Tacoma", mileage=20000)
-        est_high = pricer.get_price(year=2021, make="Toyota", model="Tacoma", mileage=120000)
-        assert est_low.fair_market_value > est_high.fair_market_value

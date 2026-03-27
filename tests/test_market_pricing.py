@@ -292,8 +292,8 @@ class TestPricingPriority:
     and CarsXE displaces KBB only when VinAudit is not available.
     """
 
-    def test_vinaudit_displaces_kbb_estimate(self, monkeypatch, tmp_path):
-        """VinAudit result (high confidence) should replace KBB estimate (low confidence)."""
+    def test_vinaudit_beats_no_data(self, monkeypatch, tmp_path):
+        """VinAudit result should be used when it's the only source available."""
         import pricing.vinaudit as va_mod
         monkeypatch.setattr(va_mod, "_CACHE_DIR", str(tmp_path))
         monkeypatch.setenv("VINAUDIT_API_KEY", "test_key")
@@ -301,30 +301,19 @@ class TestPricingPriority:
         payload = {"success": True, "count": 10, "mean": 32000, "prices": [28000, 32000, 36000]}
         with patch("pricing.vinaudit.requests.get", return_value=_mock_response(payload)):
             from pricing.vinaudit import get_vinaudit_price
-            from pricing.kbb import KBBPricer
-
-            kbb_pricer = KBBPricer()
-            kbb_est = kbb_pricer.get_price(year=2019, make="Toyota", model="Tacoma", mileage=60000)
-
             va_est = get_vinaudit_price(
-                vin="1NXBR32E85Z545487",
-                mileage=60000,
-                make="Toyota",
-                model="Tacoma",
-                year=2019,
+                vin="1NXBR32E85Z545487", mileage=60000,
+                make="Toyota", model="Tacoma", year=2019,
             )
+            price_est = va_est if (va_est and va_est.fair_market_value) else None
 
-            # Simulate pipeline logic: VinAudit wins over KBB estimate
-            price_est = kbb_est
-            if va_est and va_est.fair_market_value:
-                price_est = va_est
-
+        assert price_est is not None
         assert price_est.source == "vinaudit"
         assert price_est.fair_market_value == 32000
         assert price_est.confidence == "high"
 
-    def test_carsxe_displaces_kbb_when_no_vinaudit(self, monkeypatch, tmp_path):
-        """CarsXE replaces KBB estimate when VinAudit is unavailable."""
+    def test_carsxe_used_when_no_vinaudit(self, monkeypatch, tmp_path):
+        """CarsXE is used when VinAudit is unavailable."""
         import pricing.carsxe as cx_mod
         monkeypatch.setattr(cx_mod, "_CACHE_DIR", str(tmp_path))
         monkeypatch.setenv("CARSXE_API_KEY", "test_key")
@@ -333,18 +322,10 @@ class TestPricingPriority:
         payload = {"price": {"average": 25000, "below": 21000, "above": 29000}}
         with patch("pricing.carsxe.requests.get", return_value=_mock_response(payload)):
             from pricing.carsxe import get_carsxe_price
-            from pricing.kbb import KBBPricer
-
-            kbb_pricer = KBBPricer()
-            kbb_est = kbb_pricer.get_price(year=2019, make="Honda", model="Civic", mileage=70000)
-
-            # No VinAudit (no key) — CarsXE is used instead
             cx_est = get_carsxe_price(make="Honda", model="Civic", year=2019, mileage=70000)
+            price_est = cx_est if (cx_est and cx_est.fair_market_value) else None
 
-            price_est = kbb_est
-            if cx_est and cx_est.fair_market_value:
-                price_est = cx_est
-
+        assert price_est is not None
         assert price_est.source == "carsxe"
         assert price_est.fair_market_value == 25000
 
