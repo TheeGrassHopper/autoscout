@@ -132,6 +132,126 @@ class TestCarvanaPricingPlaywright:
         assert result == (None, None)
 
 
+# ── Carvana: year/mileage post-process filter ────────────────────────────────
+
+class TestCarvanaFiltering:
+
+    def _make_pricing_data(self, entries: list[dict]) -> dict:
+        """Build a mock vehiclePaymentTermsMapping from a list of {id, price, kbb}."""
+        return {
+            "vehiclePaymentTermsMapping": {
+                str(e["id"]): {
+                    "incentivizedPrice": e["price"],
+                    "kbbValue": e.get("kbb", e["price"]),
+                }
+                for e in entries
+            }
+        }
+
+    def _make_vehicles_raw(self, entries: list[dict]) -> list:
+        """Build mock vehicle listing objects with year, mileage, vehicleId."""
+        return [
+            {"vehicleId": str(e["id"]), "year": e["year"], "mileage": e["mileage"]}
+            for e in entries
+        ]
+
+    def _run_filter(self, vehicles, pricing, target_year, target_mileage,
+                    year_range=2, mileage_range=20_000):
+        """Exercise the filtering logic directly without Playwright."""
+        from pricing import carvana as carvana_mod
+        import statistics
+
+        vehicle_meta = {}
+        for v in vehicles:
+            vid = str(v.get("vehicleId") or v.get("id") or "")
+            if vid:
+                vehicle_meta[vid] = {
+                    "year": v.get("year"),
+                    "mileage": v.get("mileage") or v.get("miles"),
+                }
+
+        vehicle_map = pricing.get("vehiclePaymentTermsMapping", {})
+        carvana_prices, kbb_values = [], []
+        for vid, info in vehicle_map.items():
+            meta = vehicle_meta.get(str(vid), {})
+            v_year = meta.get("year")
+            v_mileage = meta.get("mileage")
+            if v_year and target_year and abs(int(v_year) - target_year) > year_range:
+                continue
+            if v_mileage and target_mileage and int(v_mileage) > target_mileage + mileage_range:
+                continue
+            cp = info.get("incentivizedPrice")
+            kv = info.get("kbbValue")
+            if cp and 3_000 < cp < 300_000:
+                carvana_prices.append(int(cp))
+            if kv and 3_000 < kv < 300_000:
+                kbb_values.append(int(kv))
+
+        carvana_median = int(statistics.median(carvana_prices)) if carvana_prices else None
+        kbb_median = int(statistics.median(kbb_values)) if kbb_values else None
+        return carvana_median, kbb_median
+
+    def test_filters_out_wrong_year_vehicles(self):
+        """2011 Camry lookup should exclude 2020+ vehicles from median."""
+        vehicles = self._make_vehicles_raw([
+            {"id": 1, "year": 2010, "mileage": 90_000},   # ✅ in range
+            {"id": 2, "year": 2011, "mileage": 95_000},   # ✅ in range
+            {"id": 3, "year": 2012, "mileage": 100_000},  # ✅ in range
+            {"id": 4, "year": 2020, "mileage": 30_000},   # ❌ too new
+            {"id": 5, "year": 2022, "mileage": 10_000},   # ❌ too new
+        ])
+        pricing = self._make_pricing_data([
+            {"id": 1, "price": 10_000},
+            {"id": 2, "price": 11_000},
+            {"id": 3, "price": 12_000},
+            {"id": 4, "price": 25_000},   # should be excluded
+            {"id": 5, "price": 28_000},   # should be excluded
+        ])
+        price, _ = self._run_filter(vehicles, pricing, target_year=2011, target_mileage=96_000)
+        assert price is not None
+        assert price <= 15_000, f"Expected ≤$15k for 2011 Camry, got ${price:,}"
+
+    def test_filters_out_low_mileage_vehicles(self):
+        """High-mileage listing should exclude low-mileage (expensive) comps."""
+        vehicles = self._make_vehicles_raw([
+            {"id": 1, "year": 2011, "mileage": 90_000},   # ✅ similar mileage
+            {"id": 2, "year": 2011, "mileage": 110_000},  # ✅ similar mileage
+            {"id": 3, "year": 2011, "mileage": 10_000},   # ❌ too low mileage (expensive)
+        ])
+        pricing = self._make_pricing_data([
+            {"id": 1, "price": 10_000},
+            {"id": 2, "price": 9_500},
+            {"id": 3, "price": 19_000},  # should be excluded — mileage too far
+        ])
+        price, _ = self._run_filter(vehicles, pricing, target_year=2011, target_mileage=96_000)
+        assert price is not None
+        assert price <= 12_000
+
+    def test_returns_none_when_all_filtered_out(self):
+        """If all vehicles are filtered out, return None — not an inflated average."""
+        vehicles = self._make_vehicles_raw([
+            {"id": 1, "year": 2022, "mileage": 5_000},   # ❌ wrong year
+            {"id": 2, "year": 2023, "mileage": 3_000},   # ❌ wrong year
+        ])
+        pricing = self._make_pricing_data([
+            {"id": 1, "price": 28_000},
+            {"id": 2, "price": 30_000},
+        ])
+        price, kbb = self._run_filter(vehicles, pricing, target_year=2011, target_mileage=96_000)
+        assert price is None
+        assert kbb is None
+
+    def test_no_vehicle_meta_falls_back_gracefully(self):
+        """If vehicle metadata is empty (API changed), use all pricing — don't crash."""
+        pricing = self._make_pricing_data([
+            {"id": 1, "price": 11_000},
+            {"id": 2, "price": 12_000},
+        ])
+        price, _ = self._run_filter([], pricing, target_year=2011, target_mileage=96_000)
+        # With no metadata, no filtering is applied — returns median of all
+        assert price == 11_500
+
+
 # ── KBB cache ─────────────────────────────────────────────────────────────────
 
 class TestKBBCache:

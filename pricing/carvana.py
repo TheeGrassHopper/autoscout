@@ -75,11 +75,23 @@ def _fetch_from_carvana(
     logger.debug(f"Carvana search: {url}")
 
     pricing_data: dict = {}
+    vehicles_raw: list = []
 
     def on_response(response):
         if "search/api/v2/pricing" in response.url:
             try:
                 pricing_data.update(response.json())
+            except Exception:
+                pass
+        elif "search/api/v2" in response.url and "pricing" not in response.url:
+            # Vehicle listings endpoint — contains year, mileage, vehicleId
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    for key in ("vehicles", "results", "data", "items"):
+                        if isinstance(data.get(key), list):
+                            vehicles_raw.extend(data[key])
+                            break
             except Exception:
                 pass
 
@@ -110,6 +122,16 @@ def _fetch_from_carvana(
         logger.warning(f"Carvana Playwright error for {year} {make} {model}: {e}")
         return None, None
 
+    # Build vehicle metadata map: vehicle_id -> {year, mileage}
+    vehicle_meta: dict = {}
+    for v in vehicles_raw:
+        vid = str(v.get("vehicleId") or v.get("id") or "")
+        if vid:
+            vehicle_meta[vid] = {
+                "year":    v.get("year"),
+                "mileage": v.get("mileage") or v.get("miles"),
+            }
+
     # pricing_data is keyed by vehiclePaymentTermsMapping → vehicle_id → {...}
     vehicle_map = pricing_data.get("vehiclePaymentTermsMapping", {})
     if not vehicle_map:
@@ -118,7 +140,21 @@ def _fetch_from_carvana(
 
     carvana_prices = []
     kbb_values = []
+    skipped = 0
     for vid, info in vehicle_map.items():
+        # Post-process filter: apply year ±range and mileage ≤ listing+range
+        # Only filter if we have vehicle metadata (graceful fallback if API changes)
+        if vehicle_meta:
+            meta = vehicle_meta.get(str(vid), {})
+            v_year    = meta.get("year")
+            v_mileage = meta.get("mileage")
+            if v_year and year and abs(int(v_year) - year) > year_range:
+                skipped += 1
+                continue
+            if v_mileage and mileage and int(v_mileage) > mileage + mileage_range:
+                skipped += 1
+                continue
+
         cp = info.get("incentivizedPrice")
         kv = info.get("kbbValue")
         if cp and 3_000 < cp < 300_000:
@@ -126,13 +162,21 @@ def _fetch_from_carvana(
         if kv and 3_000 < kv < 300_000:
             kbb_values.append(int(kv))
 
+    # If filtering removed everything, return None rather than an inflated average
+    if not carvana_prices:
+        logger.debug(
+            f"Carvana {year} {make} {model}: no comparables after year/mileage filter "
+            f"(skipped {skipped}/{len(vehicle_map)})"
+        )
+        return None, None
+
     carvana_median = int(statistics.median(carvana_prices)) if carvana_prices else None
     kbb_median = int(statistics.median(kbb_values)) if kbb_values else None
 
-    logger.debug(
+    logger.info(
         f"Carvana {year} {make} {model}: "
-        f"carvana={carvana_median} kbb={kbb_median} "
-        f"({len(carvana_prices)} listings)"
+        f"carvana=${carvana_median:,} kbb=${kbb_median:,} "
+        f"({len(carvana_prices)} filtered comps, {skipped} skipped)"
     )
     return carvana_median, kbb_median
 
