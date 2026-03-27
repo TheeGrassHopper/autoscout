@@ -60,7 +60,7 @@ SOURCES = {
 }
 
 PRICING_SOURCES = {
-    "kbb": True,
+    "kbb": False,       # Disabled — replaced by kbb_apify (real KBB data via Apify)
     "carvana": True,        # Enabled — scrapes Carvana for comparable prices
     "carmax": True,         # Enabled — scrapes CarMax for comparable prices
 

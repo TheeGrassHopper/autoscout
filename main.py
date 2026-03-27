@@ -184,18 +184,20 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     # ── Step 2: Price lookups ─────────────────────────────────────────────────
     logger.info("STEP 2 — Fetching market values (Carvana + Local Market + KBB)")
 
-    pricer = KBBPricer() if PRICING_SOURCES.get("kbb") else None
+    # KBBPricer is kept only as last-resort fallback (depreciation model, no web scraping)
+    kbb_fallback = KBBPricer()
     use_carvana = PRICING_SOURCES.get("carvana", False)
     use_carmax = PRICING_SOURCES.get("carmax", False)
     use_vinaudit  = PRICING_SOURCES.get("vinaudit", False)  and bool(os.getenv("VINAUDIT_API_KEY"))
     use_kbb_apify = PRICING_SOURCES.get("kbb_apify", False) and bool(os.getenv("APIFY_API_TOKEN"))
     use_carsxe    = PRICING_SOURCES.get("carsxe", False)    and bool(os.getenv("CARSXE_API_KEY"))
-    if use_vinaudit:
-        logger.info("VinAudit pricing enabled (real transaction data, VIN listings only)")
-    if use_kbb_apify:
-        logger.info("KBB/Apify pricing enabled (real KBB fair market + MSRP, all listings)")
-    if use_carsxe:
-        logger.info("CarsXE pricing enabled (market value, all listings)")
+    logger.info(
+        "Pricing chain: "
+        + ("VinAudit → " if use_vinaudit else "")
+        + ("KBB/Apify → " if use_kbb_apify else "")
+        + ("CarsXE → " if use_carsxe else "")
+        + "depreciation model (fallback)"
+    )
 
     # ── Step 3: Score listings ────────────────────────────────────────────────
     logger.info("STEP 3 — Scoring listings (parallel price lookups)")
@@ -213,13 +215,7 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
         mileage = raw.mileage or 50000
         has_vehicle = raw.make and raw.model and raw.year
 
-        # KBB (fast — file cache, no network)
         price_est = None
-        if pricer and has_vehicle:
-            price_est = pricer.get_price(
-                year=raw.year, make=raw.make, model=raw.model,
-                mileage=mileage, zip_code=LOCATION.get("zip_code", "85001"),
-            )
 
         # Launch VinAudit + KBB/Apify + CarsXE + Carvana + CarMax concurrently
         futures = {}
@@ -262,12 +258,15 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
             carvana_price, carvana_kbb = carvana_result
 
         # Priority: VinAudit (VIN, high) > KBB/Apify (real KBB, high) > CarsXE (medium)
+        # > depreciation model (last resort, low confidence)
         if va_result and va_result.fair_market_value:
             price_est = va_result
         elif kbb_result and kbb_result.fair_market_value:
             price_est = kbb_result
         elif cx_result and cx_result.fair_market_value:
             price_est = cx_result
+        elif has_vehicle:
+            price_est = kbb_fallback._fallback_estimate(raw.year, raw.make, raw.model, mileage)
 
         if carvana_kbb and (price_est is None or price_est.source == "kbb_estimate"):
             price_est = PE(
