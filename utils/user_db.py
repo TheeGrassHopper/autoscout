@@ -7,14 +7,18 @@ Separate from autoscout.db so user data survives database resets.
 import json
 import os
 import secrets
-import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from utils.pg import IS_PG, column_exists, db_conn
+
 
 DB_PATH = "output/users.db"
+
+# Column type helpers
+_PK = "BIGSERIAL PRIMARY KEY" if IS_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
 
 
 def _now() -> str:
@@ -29,69 +33,69 @@ class UserDB:
 
     @contextmanager
     def _conn(self):
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        try:
+        with db_conn(self.path) as conn:
+            if not IS_PG:
+                conn.execute("PRAGMA foreign_keys = ON")
             yield conn
-            conn.commit()
-        finally:
-            conn.close()
 
     def _init_schema(self):
         with self._conn() as conn:
-            conn.executescript("""
+            conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS users (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id              {_PK},
                     email           TEXT UNIQUE NOT NULL,
                     hashed_password TEXT NOT NULL,
                     created_at      TEXT NOT NULL,
                     role            TEXT NOT NULL DEFAULT 'user',
                     notify_carvana  INTEGER NOT NULL DEFAULT 0
-                );
-
+                )
+            """)
+            conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS saved_searches (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id         {_PK},
                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     name       TEXT NOT NULL,
                     criteria   TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
-                );
-
+                )
+            """)
+            conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS search_results (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id          {_PK},
                     search_id   INTEGER NOT NULL REFERENCES saved_searches(id) ON DELETE CASCADE,
                     listing_id  TEXT NOT NULL,
                     result_data TEXT NOT NULL,
                     created_at  TEXT NOT NULL
-                );
-
+                )
+            """)
+            conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS user_favorites (
-                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id           {_PK},
                     user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     listing_id   TEXT NOT NULL,
                     listing_data TEXT NOT NULL,
                     saved_at     TEXT NOT NULL,
                     UNIQUE(user_id, listing_id)
-                );
-
+                )
+            """)
+            conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS password_reset_tokens (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id         {_PK},
                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     token      TEXT UNIQUE NOT NULL,
                     expires_at TEXT NOT NULL,
                     used       INTEGER NOT NULL DEFAULT 0
-                );
+                )
             """)
+
         # Migrate existing DBs — add new columns if missing
         with self._conn() as conn:
-            existing = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
             for col, defn in [
                 ("role",           "TEXT    NOT NULL DEFAULT 'user'"),
                 ("notify_carvana", "INTEGER NOT NULL DEFAULT 0"),
             ]:
-                if col not in existing:
+                if not column_exists(conn, "users", col):
                     conn.execute(f"ALTER TABLE users ADD COLUMN {col} {defn}")
 
     # ── Users ────────────────────────────────────────────────────────────────
@@ -106,11 +110,18 @@ class UserDB:
     def create_user(self, email: str, hashed_password: str) -> dict:
         admin_email = os.getenv("ADMIN_EMAIL", "").lower().strip()
         with self._conn() as conn:
-            cur = conn.execute(
-                "INSERT INTO users (email, hashed_password, created_at) VALUES (?, ?, ?)",
-                (email.lower().strip(), hashed_password, _now()),
-            )
-            uid = cur.lastrowid
+            if IS_PG:
+                cur = conn.execute(
+                    "INSERT INTO users (email, hashed_password, created_at) VALUES (?, ?, ?) RETURNING id",
+                    (email.lower().strip(), hashed_password, _now()),
+                )
+                uid = conn.lastrowid
+            else:
+                cur = conn.execute(
+                    "INSERT INTO users (email, hashed_password, created_at) VALUES (?, ?, ?)",
+                    (email.lower().strip(), hashed_password, _now()),
+                )
+                uid = cur.lastrowid
             # First user ever OR matches ADMIN_EMAIL env var → make admin
             total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
             if total == 1 or (admin_email and email.lower().strip() == admin_email):
@@ -176,11 +187,21 @@ class UserDB:
     def create_search(self, user_id: int, name: str, criteria: dict) -> dict:
         now = _now()
         with self._conn() as conn:
-            cur = conn.execute(
-                "INSERT INTO saved_searches (user_id, name, criteria, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, name, json.dumps(criteria), now, now),
-            )
-            return self._fetch_search(conn, cur.lastrowid)
+            if IS_PG:
+                conn.execute(
+                    "INSERT INTO saved_searches (user_id, name, criteria, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?) RETURNING id",
+                    (user_id, name, json.dumps(criteria), now, now),
+                )
+                search_id = conn.lastrowid
+            else:
+                cur = conn.execute(
+                    "INSERT INTO saved_searches (user_id, name, criteria, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (user_id, name, json.dumps(criteria), now, now),
+                )
+                search_id = cur.lastrowid
+            return self._fetch_search(conn, search_id)
 
     def get_searches(self, user_id: int) -> list[dict]:
         with self._conn() as conn:
@@ -243,8 +264,11 @@ class UserDB:
     def add_favorite(self, user_id: int, listing_id: str, listing_data: dict) -> dict:
         with self._conn() as conn:
             conn.execute(
-                """INSERT OR REPLACE INTO user_favorites (user_id, listing_id, listing_data, saved_at)
-                   VALUES (?, ?, ?, ?)""",
+                """INSERT INTO user_favorites (user_id, listing_id, listing_data, saved_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT (user_id, listing_id) DO UPDATE SET
+                       listing_data=EXCLUDED.listing_data,
+                       saved_at=EXCLUDED.saved_at""",
                 (user_id, listing_id, json.dumps(listing_data), _now()),
             )
             row = conn.execute(

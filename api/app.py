@@ -21,9 +21,9 @@ import json
 import logging
 import os
 import queue
-import sqlite3
 import sys
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -39,6 +39,7 @@ from api.routers import auth as auth_router, users as users_router, admin as adm
 
 from config import (FILTERS, LOCATION, MESSAGING, NOTIFICATIONS,
                     OUTPUT, PRICING_SOURCES, SCORING, SOURCES)
+from utils.pg import IS_PG, db_conn as _db_conn
 
 # ── Logging setup (configure before any routes run) ───────────────────────────
 os.makedirs("output", exist_ok=True)
@@ -133,9 +134,8 @@ _pipeline = {
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def _db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Return a context manager that yields a unified DB connection for the main DB."""
+    return _db_conn(DB_PATH)
 
 def _rows(rows) -> list[dict]:
     out = []
@@ -151,24 +151,41 @@ def _rows(rows) -> list[dict]:
 from utils.email import send_email as _send_email
 
 def _db_exists() -> bool:
-    if not os.path.exists(DB_PATH):
-        return False
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='listings'").fetchone()
-        conn.close()
-        return row is not None
-    except Exception:
-        return False
+    """Return True if the listings table exists in the main DB."""
+    if IS_PG:
+        try:
+            with _db_conn(DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM information_schema.tables "
+                    "WHERE table_schema='public' AND table_name='listings'",
+                    (),
+                ).fetchone()
+                return bool(row and row[0])
+        except Exception:
+            return False
+    else:
+        if not os.path.exists(DB_PATH):
+            return False
+        try:
+            import sqlite3 as _sqlite3
+            conn = _sqlite3.connect(DB_PATH)
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='listings'"
+            ).fetchone()
+            conn.close()
+            return row is not None
+        except Exception:
+            return False
 
 def _fav_db():
-    conn = sqlite3.connect(FAV_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Return a context manager that yields a unified DB connection for the favorites DB."""
+    return _db_conn(FAV_DB_PATH)
+
+_REAL = "DOUBLE PRECISION" if IS_PG else "REAL"
 
 def _ensure_fav_schema():
     with _fav_db() as conn:
-        conn.execute("""
+        conn.execute(f"""
             CREATE TABLE IF NOT EXISTS favorites (
                 listing_id           TEXT PRIMARY KEY,
                 source               TEXT,
@@ -181,7 +198,7 @@ def _ensure_fav_schema():
                 local_market_value   INTEGER,
                 blended_market_value INTEGER,
                 profit_estimate      INTEGER,
-                profit_margin_pct    REAL,
+                profit_margin_pct    {_REAL},
                 demand_score         INTEGER,
                 savings              INTEGER,
                 total_score          INTEGER,
@@ -309,7 +326,7 @@ def save_favorite(listing_id: str):
     _ensure_fav_schema()
     with _fav_db() as conn:
         conn.execute("""
-            INSERT OR REPLACE INTO favorites (
+            INSERT INTO favorites (
                 listing_id, source, title, url, asking_price, kbb_value,
                 carvana_value, carmax_value, local_market_value, blended_market_value,
                 profit_estimate, profit_margin_pct, demand_score, savings,
@@ -322,6 +339,21 @@ def save_favorite(listing_id: str):
                 :total_score, :deal_class, :make, :model, :year, :mileage, :location,
                 :vin, :title_status, :posted_date, :first_seen, :last_seen, :saved_at
             )
+            ON CONFLICT(listing_id) DO UPDATE SET
+                source=EXCLUDED.source, title=EXCLUDED.title, url=EXCLUDED.url,
+                asking_price=EXCLUDED.asking_price, kbb_value=EXCLUDED.kbb_value,
+                carvana_value=EXCLUDED.carvana_value, carmax_value=EXCLUDED.carmax_value,
+                local_market_value=EXCLUDED.local_market_value,
+                blended_market_value=EXCLUDED.blended_market_value,
+                profit_estimate=EXCLUDED.profit_estimate,
+                profit_margin_pct=EXCLUDED.profit_margin_pct,
+                demand_score=EXCLUDED.demand_score, savings=EXCLUDED.savings,
+                total_score=EXCLUDED.total_score, deal_class=EXCLUDED.deal_class,
+                make=EXCLUDED.make, model=EXCLUDED.model, year=EXCLUDED.year,
+                mileage=EXCLUDED.mileage, location=EXCLUDED.location,
+                vin=EXCLUDED.vin, title_status=EXCLUDED.title_status,
+                posted_date=EXCLUDED.posted_date, first_seen=EXCLUDED.first_seen,
+                last_seen=EXCLUDED.last_seen, saved_at=EXCLUDED.saved_at
         """, data)
     return {"status": "saved", "listing_id": listing_id}
 
@@ -572,7 +604,11 @@ def stream_logs():
 def reset_database():
     if _pipeline["running"]:
         raise HTTPException(409, "Pipeline is running — stop it before clearing the database")
-    if os.path.exists(DB_PATH):
+    if IS_PG:
+        with _db_conn(DB_PATH) as conn:
+            conn.execute("DROP TABLE IF EXISTS messages")
+            conn.execute("DROP TABLE IF EXISTS listings")
+    elif os.path.exists(DB_PATH):
         os.remove(DB_PATH)
     return {"status": "cleared"}
 
