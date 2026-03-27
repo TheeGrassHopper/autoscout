@@ -24,6 +24,7 @@ import logging
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -53,6 +54,8 @@ from scrapers.facebook import scrape_facebook
 from pricing.kbb import KBBPricer
 from pricing.carvana import get_carvana_price
 from pricing.carmax import get_carmax_price
+from pricing.vinaudit import get_vinaudit_price
+from pricing.carsxe import get_carsxe_price
 from scoring.engine import DealScorer, ScoredListing, sort_listings, print_summary
 from messaging.drafter import MessageDrafter
 from messaging.sender import MessageSender
@@ -183,75 +186,119 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     pricer = KBBPricer() if PRICING_SOURCES.get("kbb") else None
     use_carvana = PRICING_SOURCES.get("carvana", False)
     use_carmax = PRICING_SOURCES.get("carmax", False)
+    use_vinaudit = PRICING_SOURCES.get("vinaudit", False) and bool(os.getenv("VINAUDIT_API_KEY"))
+    use_carsxe   = PRICING_SOURCES.get("carsxe", False)  and bool(os.getenv("CARSXE_API_KEY"))
+    if use_vinaudit:
+        logger.info("VinAudit pricing enabled (real transaction data, VIN listings only)")
+    if use_carsxe:
+        logger.info("CarsXE pricing enabled (market value, all listings)")
 
     # ── Step 3: Score listings ────────────────────────────────────────────────
-    logger.info("STEP 3 — Scoring listings")
+    logger.info("STEP 3 — Scoring listings (parallel price lookups)")
 
     scorer = DealScorer(config={**SCORING, **MESSAGING})
     db = Database(db_path=OUTPUT["db_path"])
 
-    scored_listings = []
-    for i, raw in enumerate(all_raw, 1):
-        logger.info(f"  [{i}/{len(all_raw)}] {raw.title[:50]}")
+    def _fetch_prices(raw):
+        """
+        D: Fetch all price sources for one listing in parallel threads.
+        Returns (price_est, carvana_price, carmax_price, local_mkt_price).
+        """
+        from pricing.kbb import PriceEstimate as PE
 
-        # KBB lookup
+        mileage = raw.mileage or 50000
+        has_vehicle = raw.make and raw.model and raw.year
+
+        # KBB (fast — file cache, no network)
         price_est = None
-        if pricer and raw.make and raw.model and raw.year:
+        if pricer and has_vehicle:
             price_est = pricer.get_price(
-                year=raw.year,
-                make=raw.make,
-                model=raw.model,
-                mileage=raw.mileage or 50000,
-                zip_code=LOCATION.get("zip_code", "85001"),
+                year=raw.year, make=raw.make, model=raw.model,
+                mileage=mileage, zip_code=LOCATION.get("zip_code", "85001"),
             )
-        elif pricer:
-            logger.debug(f"  Skipping KBB lookup (missing make/model/year for: {raw.title})")
 
-        # Carvana lookup — returns (carvana_price, kbb_from_carvana)
-        carvana_price = None
-        carvana_kbb = None
-        if use_carvana and raw.make and raw.model and raw.year:
-            carvana_price, carvana_kbb = get_carvana_price(
-                make=raw.make,
-                model=raw.model,
-                year=raw.year,
-                mileage=raw.mileage or 50000,
-            )
-            if carvana_price:
-                logger.debug(f"  Carvana: ${carvana_price:,}")
-            if carvana_kbb:
-                logger.debug(f"  Carvana KBB: ${carvana_kbb:,}")
-            # Use Carvana's real KBB value if we don't have one (or it's an estimate)
-            if carvana_kbb and (
-                price_est is None or price_est.source == "kbb_estimate"
-            ):
-                from pricing.kbb import PriceEstimate
-                price_est = PriceEstimate(
-                    source="carvana_kbb",
-                    make=raw.make, model=raw.model,
-                    year=raw.year, mileage=raw.mileage or 50000,
-                    fair_market_value=carvana_kbb,
-                    confidence="high",
+        # Launch VinAudit + CarsXE + Carvana + CarMax concurrently
+        futures = {}
+        with ThreadPoolExecutor(max_workers=4) as p:
+            if use_vinaudit and raw.vin and raw.make and raw.model:
+                futures["vinaudit"] = p.submit(
+                    get_vinaudit_price, vin=raw.vin, mileage=mileage,
+                    make=raw.make, model=raw.model, year=raw.year or 0,
+                )
+            if use_carsxe and has_vehicle and not (price_est and price_est.source == "vinaudit"):
+                futures["carsxe"] = p.submit(
+                    get_carsxe_price, make=raw.make, model=raw.model,
+                    year=raw.year, mileage=mileage, vin=raw.vin or "",
+                )
+            if use_carvana and has_vehicle:
+                futures["carvana"] = p.submit(
+                    get_carvana_price, make=raw.make, model=raw.model,
+                    year=raw.year, mileage=mileage,
+                )
+            if use_carmax and has_vehicle:
+                futures["carmax"] = p.submit(
+                    get_carmax_price, make=raw.make, model=raw.model,
+                    year=raw.year, mileage=mileage,
                 )
 
-        # CarMax lookup
-        carmax_price = None
-        if use_carmax and raw.make and raw.model and raw.year:
-            carmax_price = get_carmax_price(
-                make=raw.make,
-                model=raw.model,
-                year=raw.year,
-                mileage=raw.mileage or 50000,
-            )
-            if carmax_price:
-                logger.debug(f"  CarMax: ${carmax_price:,}")
+        # Collect results
+        va_result      = futures["vinaudit"].result() if "vinaudit" in futures else None
+        cx_result      = futures["carsxe"].result()   if "carsxe"   in futures else None
+        carvana_result = futures["carvana"].result()  if "carvana"  in futures else None
+        carmax_result  = futures["carmax"].result()   if "carmax"   in futures else None
 
-        # Local market comp — year ±1, mileage ±10k, national CL + FB pool
+        carvana_price = carvana_kbb = carmax_price = None
+        if carvana_result:
+            carvana_price, carvana_kbb = carvana_result
+
+        if va_result and va_result.fair_market_value:
+            price_est = va_result
+        elif cx_result and cx_result.fair_market_value:
+            price_est = cx_result
+
+        if carvana_kbb and (price_est is None or price_est.source == "kbb_estimate"):
+            price_est = PE(
+                source="carvana_kbb", make=raw.make, model=raw.model,
+                year=raw.year, mileage=mileage,
+                fair_market_value=carvana_kbb, confidence="high",
+            )
+
+        if carmax_result:
+            carmax_price = carmax_result
+
         local_mkt_price = None
         if raw.make and raw.model:
             local_mkt_price = comps_engine.get_market_price(
                 raw.make, raw.model, raw.year, raw.mileage
             )
+
+        return price_est, carvana_price, carmax_price, local_mkt_price
+
+    scored_listings = []
+    # D: fetch prices for all listings in parallel (8 listings at a time)
+    _PRICE_WORKERS = 8
+    price_results: dict = {}
+
+    logger.info(f"  Fetching prices for {len(all_raw)} listings ({_PRICE_WORKERS} parallel workers)…")
+    with ThreadPoolExecutor(max_workers=_PRICE_WORKERS) as pool:
+        future_map = {pool.submit(_fetch_prices, raw): raw for raw in all_raw}
+        for future in as_completed(future_map):
+            raw = future_map[future]
+            try:
+                price_results[raw.listing_id] = future.result()
+            except Exception as e:
+                logger.warning(f"  Price fetch failed for {raw.title[:40]}: {e}")
+                price_results[raw.listing_id] = (None, None, None, None)
+
+    if stop_check and stop_check():
+        logger.info("Stop requested after pricing — halting pipeline")
+        return []
+
+    for i, raw in enumerate(all_raw, 1):
+        logger.info(f"  [{i}/{len(all_raw)}] {raw.title[:50]}")
+        price_est, carvana_price, carmax_price, local_mkt_price = price_results.get(
+            raw.listing_id, (None, None, None, None)
+        )
 
         # Score (blends all available price sources)
         scored = scorer.score(

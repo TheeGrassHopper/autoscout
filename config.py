@@ -63,6 +63,15 @@ PRICING_SOURCES = {
     "kbb": True,
     "carvana": True,        # Enabled — scrapes Carvana for comparable prices
     "carmax": True,         # Enabled — scrapes CarMax for comparable prices
+
+    # VinAudit: real transaction data via VIN (requires VINAUDIT_API_KEY in .env)
+    # 500 free calls, then ~$0.01/call. Used only for listings that have a VIN.
+    "vinaudit": True,
+
+    # CarsXE: make/model/year/mileage market value (requires CARSXE_API_KEY in .env)
+    # 100 free calls, then ~$0.01–$0.05/call. Used as KBB fallback when no VIN.
+    "carsxe": True,
+
     # Carvana cash offer flow: runs the full sell-my-car automation for listings
     # that have a VIN and score fair/great. SLOW (~2 min/VIN), runs in parallel.
     # Only enable if you want guaranteed exit price validation per listing.

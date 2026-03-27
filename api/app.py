@@ -585,6 +585,48 @@ class _QueueLogHandler(logging.Handler):
             pass
 
 
+@app.post("/api/pipeline/prefetch")
+def prefetch_comps(background_tasks: BackgroundTasks, request: Request):
+    """
+    K: Pre-warm the comps cache for all vehicles currently in the DB.
+    Designed to be called by a scheduler (Railway cron, external cron, etc.)
+    so the first real pipeline run finds all comps already cached.
+
+    Safe to call while a pipeline is running — it only writes to the comps
+    cache, which is read-only during scoring.
+    """
+    _verify_api_key(request)
+
+    def _run_prefetch():
+        try:
+            import asyncio
+            from utils.db import Database
+            from utils.comps import CompsEngine
+
+            db = Database(db_path=DB_PATH)
+            rows = db.get_great_deals(limit=500) or []
+            # Also pull fair + poor
+            with db._connect() as conn:
+                all_rows = conn.execute(
+                    "SELECT make, model FROM listings WHERE make IS NOT NULL AND model IS NOT NULL"
+                ).fetchall()
+
+            unique = {(r["make"], r["model"]) for r in all_rows if r["make"] and r["model"]}
+            if not unique:
+                logger.info("Prefetch: no vehicles in DB yet — nothing to warm")
+                return
+
+            logger.info(f"Prefetch: warming comps cache for {len(unique)} vehicle type(s)…")
+            engine = CompsEngine([])
+            engine.fetch_all_comps(unique, max_seconds=300)
+            logger.info("Prefetch: comps cache warm-up complete")
+        except Exception as e:
+            logger.error(f"Prefetch failed: {e}")
+
+    background_tasks.add_task(_run_prefetch)
+    return {"status": "prefetch_started"}
+
+
 @app.get("/api/pipeline/logs")
 def stream_logs():
     """SSE endpoint — browser subscribes and receives live log lines."""

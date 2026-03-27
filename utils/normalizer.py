@@ -103,6 +103,12 @@ def normalize_batch(listings: list[RawListing], api_key: str, delay: float = 0.3
     api_disabled = False  # flip to True on first auth error so we stop spamming
 
     for i, listing in enumerate(listings):
+        # H: Skip Claude when listing already has all key fields — no API call needed
+        if listing.make and listing.model and listing.year and listing.mileage:
+            logger.debug(f"  [{i+1}/{len(listings)}] Already complete — skipping Claude: {listing.title[:50]}")
+            normalized.append(listing)
+            continue
+
         if not api_disabled:
             logger.info(f"Normalizing {i+1}/{len(listings)}: {listing.title[:60]}")
             try:
