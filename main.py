@@ -55,6 +55,7 @@ from pricing.kbb import KBBPricer
 from pricing.carvana import get_carvana_price
 from pricing.carmax import get_carmax_price
 from pricing.vinaudit import get_vinaudit_price
+from pricing.kbb_apify import get_kbb_apify_price
 from pricing.carsxe import get_carsxe_price
 from scoring.engine import DealScorer, ScoredListing, sort_listings, print_summary
 from messaging.drafter import MessageDrafter
@@ -186,10 +187,13 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     pricer = KBBPricer() if PRICING_SOURCES.get("kbb") else None
     use_carvana = PRICING_SOURCES.get("carvana", False)
     use_carmax = PRICING_SOURCES.get("carmax", False)
-    use_vinaudit = PRICING_SOURCES.get("vinaudit", False) and bool(os.getenv("VINAUDIT_API_KEY"))
-    use_carsxe   = PRICING_SOURCES.get("carsxe", False)  and bool(os.getenv("CARSXE_API_KEY"))
+    use_vinaudit  = PRICING_SOURCES.get("vinaudit", False)  and bool(os.getenv("VINAUDIT_API_KEY"))
+    use_kbb_apify = PRICING_SOURCES.get("kbb_apify", False) and bool(os.getenv("APIFY_API_TOKEN"))
+    use_carsxe    = PRICING_SOURCES.get("carsxe", False)    and bool(os.getenv("CARSXE_API_KEY"))
     if use_vinaudit:
         logger.info("VinAudit pricing enabled (real transaction data, VIN listings only)")
+    if use_kbb_apify:
+        logger.info("KBB/Apify pricing enabled (real KBB fair market + MSRP, all listings)")
     if use_carsxe:
         logger.info("CarsXE pricing enabled (market value, all listings)")
 
@@ -217,15 +221,20 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
                 mileage=mileage, zip_code=LOCATION.get("zip_code", "85001"),
             )
 
-        # Launch VinAudit + CarsXE + Carvana + CarMax concurrently
+        # Launch VinAudit + KBB/Apify + CarsXE + Carvana + CarMax concurrently
         futures = {}
-        with ThreadPoolExecutor(max_workers=4) as p:
+        with ThreadPoolExecutor(max_workers=5) as p:
             if use_vinaudit and raw.vin and raw.make and raw.model:
                 futures["vinaudit"] = p.submit(
                     get_vinaudit_price, vin=raw.vin, mileage=mileage,
                     make=raw.make, model=raw.model, year=raw.year or 0,
                 )
-            if use_carsxe and has_vehicle and not (price_est and price_est.source == "vinaudit"):
+            if use_kbb_apify and has_vehicle:
+                futures["kbb_apify"] = p.submit(
+                    get_kbb_apify_price, make=raw.make, model=raw.model,
+                    year=raw.year, mileage=mileage,
+                )
+            if use_carsxe and has_vehicle:
                 futures["carsxe"] = p.submit(
                     get_carsxe_price, make=raw.make, model=raw.model,
                     year=raw.year, mileage=mileage, vin=raw.vin or "",
@@ -242,17 +251,21 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
                 )
 
         # Collect results
-        va_result      = futures["vinaudit"].result() if "vinaudit" in futures else None
-        cx_result      = futures["carsxe"].result()   if "carsxe"   in futures else None
-        carvana_result = futures["carvana"].result()  if "carvana"  in futures else None
-        carmax_result  = futures["carmax"].result()   if "carmax"   in futures else None
+        va_result      = futures["vinaudit"].result()  if "vinaudit"  in futures else None
+        kbb_result     = futures["kbb_apify"].result() if "kbb_apify" in futures else None
+        cx_result      = futures["carsxe"].result()    if "carsxe"    in futures else None
+        carvana_result = futures["carvana"].result()   if "carvana"   in futures else None
+        carmax_result  = futures["carmax"].result()    if "carmax"    in futures else None
 
         carvana_price = carvana_kbb = carmax_price = None
         if carvana_result:
             carvana_price, carvana_kbb = carvana_result
 
+        # Priority: VinAudit (VIN, high) > KBB/Apify (real KBB, high) > CarsXE (medium)
         if va_result and va_result.fair_market_value:
             price_est = va_result
+        elif kbb_result and kbb_result.fair_market_value:
+            price_est = kbb_result
         elif cx_result and cx_result.fair_market_value:
             price_est = cx_result
 

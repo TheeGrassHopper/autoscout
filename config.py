@@ -68,6 +68,11 @@ PRICING_SOURCES = {
     # 500 free calls, then ~$0.01/call. Used only for listings that have a VIN.
     "vinaudit": True,
 
+    # KBB via Apify: real KBB fair market price + MSRP via parseforge/kelley-blue-book-scraper
+    # Uses existing APIFY_API_TOKEN — free plan covers ~100 items/run (4-16 per vehicle).
+    # Returns fair purchase price + fair market range across all trims. No VIN needed.
+    "kbb_apify": True,
+
     # CarsXE: make/model/year/mileage market value (requires CARSXE_API_KEY in .env)
     # 100 free calls, then ~$0.01–$0.05/call. Used as KBB fallback when no VIN.
     "carsxe": True,
