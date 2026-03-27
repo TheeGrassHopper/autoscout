@@ -8,16 +8,23 @@ For each unique (make, model) found in the pipeline:
   - Facebook is already at 500mi max — main-run data is reused as FB comps
 
 When scoring a specific listing, filters the comp pool to:
-  - Year ± 1  (e.g., 2021/2022/2023 for a 2022 vehicle)
-  - Mileage ± 10,000 miles
+  - Year ± DEFAULT_YEAR_RANGE    (default ±2, e.g. 2020 → 2018–2022 comps)
+  - Mileage ± DEFAULT_MILEAGE_RANGE  (default ±15k miles)
+
+Performance:
+  - 24h disk cache per (make, model) — repeat runs skip the network entirely
+  - Parallel Playwright workers (_PARALLEL_WORKERS) for first-run fetches
 
 Returns the median asking price of matching comps.
 """
 
+import json
 import logging
+import os
 import re
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -27,69 +34,143 @@ logger = logging.getLogger(__name__)
 
 CL_NATIONAL_BASE = "https://www.craigslist.org"
 MAX_COMPS_PER_VEHICLE = 80   # cap per vehicle to keep scrape fast
+_COMPS_CACHE_DIR = "output/.comps_cache"
+_COMPS_CACHE_TTL = 86400      # 24 hours
+_PARALLEL_WORKERS = 4         # concurrent Playwright browser instances
 
+# Filter windows applied when scoring a specific listing against the comp pool.
+# Wider = more comps (better median), less precise to the exact spec.
+DEFAULT_YEAR_RANGE    = 2        # ±2 years   (was ±1)
+DEFAULT_MILEAGE_RANGE = 15_000   # ±15k miles (was ±10k)
+
+
+# ── Disk cache helpers ────────────────────────────────────────────────────────
+
+def _cache_path(make: str, model: str) -> str:
+    os.makedirs(_COMPS_CACHE_DIR, exist_ok=True)
+    key = f"{make.lower()}_{model.lower()}".replace(" ", "_").replace("/", "-")
+    return os.path.join(_COMPS_CACHE_DIR, f"{key}.json")
+
+
+def _load_cache(make: str, model: str) -> Optional[list]:
+    path = _cache_path(make, model)
+    if not os.path.exists(path):
+        return None
+    if time.time() - os.path.getmtime(path) > _COMPS_CACHE_TTL:
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _save_cache(make: str, model: str, comps: list):
+    try:
+        with open(_cache_path(make, model), "w") as f:
+            json.dump(comps, f)
+    except Exception:
+        pass
+
+
+# ── Engine ────────────────────────────────────────────────────────────────────
 
 class CompsEngine:
     """
     Holds a comp price pool per (make, model).
-    Each entry: (year: int|None, mileage: int|None, price: int)
+    Each entry: [year: int|None, mileage: int|None, price: int]
     """
 
     def __init__(self, raw_listings: list):
-        # Cache: (make.lower(), model.lower()) -> [(year, mileage, price), ...]
+        # Pool: (make.lower(), model.lower()) -> [[year, mileage, price], ...]
         self._cache: dict[tuple, list] = {}
         self._preload(raw_listings)
 
     def _preload(self, raw_listings: list):
-        """Seed comp cache from listings already scraped in the main run."""
+        """Seed comp pool from listings already scraped in the main run."""
         count = 0
         for l in raw_listings:
             if l.make and l.model and l.price:
                 key = (l.make.lower(), l.model.lower())
                 if key not in self._cache:
                     self._cache[key] = []
-                self._cache[key].append((l.year, l.mileage, l.price))
+                self._cache[key].append([l.year, l.mileage, l.price])
                 count += 1
-        logger.info(f"Comps: pre-loaded {count} listings from main scrape into comp cache")
+        logger.info(f"Comps: pre-loaded {count} listings from main scrape into comp pool")
 
-    def fetch_all_comps(self, unique_vehicles: set[tuple], max_seconds: int = 60):
+    def fetch_all_comps(self, unique_vehicles: set[tuple], max_seconds: int = 600):
         """
-        Open ONE Playwright browser and scrape national Craigslist for
-        every unique (make, model) pair. Stops after max_seconds total to
-        avoid blocking the pipeline indefinitely.
+        Fetch national Craigslist comps for all unique (make, model) pairs.
+
+        - Hits a 24h disk cache first — skips network entirely for cached vehicles.
+        - Remaining vehicles fetched in parallel (_PARALLEL_WORKERS at a time).
+        - Hard time cap via max_seconds.
         """
         if not unique_vehicles:
             return
 
-        logger.info(f"Comps: fetching national CL comps for {len(unique_vehicles)} vehicle type(s) (max {max_seconds}s)…")
+        # Split into cache hits vs needs network fetch
+        needs_fetch = []
+        cache_hits = 0
+        for make, model in unique_vehicles:
+            cached = _load_cache(make, model)
+            if cached is not None:
+                key = (make.lower(), model.lower())
+                if key not in self._cache:
+                    self._cache[key] = []
+                self._cache[key].extend(cached)
+                cache_hits += 1
+            else:
+                needs_fetch.append((make, model))
+
+        if cache_hits:
+            logger.info(
+                f"Comps: {cache_hits}/{len(unique_vehicles)} vehicle type(s) loaded from 24h cache"
+            )
+
+        if not needs_fetch:
+            return
+
+        logger.info(
+            f"Comps: fetching {len(needs_fetch)} vehicle type(s) from national CL "
+            f"({_PARALLEL_WORKERS} parallel workers, max {max_seconds}s)…"
+        )
         deadline = time.time() + max_seconds
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                )
-            )
-            for make, model in unique_vehicles:
-                if time.time() > deadline:
-                    logger.info(f"Comps: time limit reached — skipping remaining vehicles")
-                    break
-                try:
-                    comps = self._scrape_cl_national(context, make, model)
-                    key = (make.lower(), model.lower())
-                    if key not in self._cache:
-                        self._cache[key] = []
-                    self._cache[key].extend(comps)
-                    logger.info(
-                        f"Comps: {make} {model} — {len(comps)} national CL comps "
-                        f"({len(self._cache[key])} total in pool)"
+        def fetch_one(make_model):
+            make, model = make_model
+            if time.time() > deadline:
+                return make, model, []
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    context = browser.new_context(
+                        user_agent=(
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/124.0.0.0 Safari/537.36"
+                        )
                     )
-                except Exception as e:
-                    logger.warning(f"Comps: failed for {make} {model}: {e}")
-            browser.close()
+                    comps = _scrape_cl_national(context, make, model)
+                    browser.close()
+                return make, model, comps
+            except Exception as e:
+                logger.warning(f"Comps: fetch failed for {make} {model}: {e}")
+                return make, model, []
+
+        with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as pool:
+            futures = {pool.submit(fetch_one, pair): pair for pair in needs_fetch}
+            for future in as_completed(futures):
+                make, model, comps = future.result()
+                key = (make.lower(), model.lower())
+                if key not in self._cache:
+                    self._cache[key] = []
+                self._cache[key].extend(comps)
+                _save_cache(make, model, comps)
+                logger.info(
+                    f"Comps: {make} {model} — {len(comps)} national CL comps "
+                    f"({len(self._cache[key])} total in pool)"
+                )
 
     def get_market_price(
         self,
@@ -97,10 +178,12 @@ class CompsEngine:
         model: str,
         year: Optional[int],
         mileage: Optional[int],
+        year_range: int = DEFAULT_YEAR_RANGE,
+        mileage_range: int = DEFAULT_MILEAGE_RANGE,
     ) -> Optional[int]:
         """
-        Return median comp price filtered to year ±1 and mileage ±10k.
-        Falls back to all comps for the make/model if nothing passes filters.
+        Return median comp price filtered to year ±year_range and mileage ±mileage_range.
+        Falls back progressively if not enough comps pass the strict filter.
         """
         key = (make.lower(), model.lower())
         pool = self._cache.get(key, [])
@@ -108,12 +191,13 @@ class CompsEngine:
             return None
 
         filtered = []
-        for (comp_year, comp_mileage, price) in pool:
-            # Year gate: skip only if BOTH years are known and differ by more than 1
-            if year and comp_year and abs(comp_year - year) > 1:
+        for entry in pool:
+            comp_year, comp_mileage, price = entry[0], entry[1], entry[2]
+            # Year gate: only apply when both are known
+            if year and comp_year and abs(comp_year - year) > year_range:
                 continue
-            # Mileage gate: skip only if BOTH are known and differ by more than 10k
-            if mileage and comp_mileage and abs(comp_mileage - mileage) > 10_000:
+            # Mileage gate: only apply when both are known
+            if mileage and comp_mileage and abs(comp_mileage - mileage) > mileage_range:
                 continue
             filtered.append(price)
 
@@ -122,73 +206,84 @@ class CompsEngine:
         if len(filtered) == 1:
             return filtered[0]
 
-        # Fallback: relaxed — use all comps for this make/model
-        all_prices = [p for (_, _, p) in pool]
+        # Fallback: relax mileage gate only
+        relaxed = []
+        for entry in pool:
+            comp_year, comp_mileage, price = entry[0], entry[1], entry[2]
+            if year and comp_year and abs(comp_year - year) > year_range:
+                continue
+            relaxed.append(price)
+
+        if len(relaxed) >= 2:
+            logger.debug(
+                f"Comps: relaxed mileage filter for {make} {model} "
+                f"— {len(relaxed)} year-matched comps"
+            )
+            return int(statistics.median(relaxed))
+
+        # Last resort: all comps for make/model regardless of year/mileage
+        all_prices = [e[2] for e in pool]
         if len(all_prices) >= 2:
-            logger.debug(f"Comps: no year/mileage matches for {make} {model} — using full pool median")
+            logger.debug(
+                f"Comps: no year/mileage matches for {make} {model} — using full pool median"
+            )
             return int(statistics.median(all_prices))
+
         return None
 
-    # ── Internal scrapers ──────────────────────────────────────────────────────
 
-    def _scrape_cl_national(self, context, make: str, model: str) -> list:
-        """
-        Scrape the national Craigslist search (no city subdomain) for a
-        make/model. Card-only — does NOT visit detail pages (fast).
-        Returns list of (year, mileage, price) tuples.
-        """
-        results = []
-        params = {
-            "query": f"{make} {model}",
-            "auto_title": "clean",
-            "hasPic": "1",
-        }
-        url = f"{CL_NATIONAL_BASE}/search/cto?{urlencode(params)}"
+# ── Internal scraper ──────────────────────────────────────────────────────────
 
-        page = context.new_page()
+def _scrape_cl_national(context, make: str, model: str) -> list:
+    """
+    Scrape the national Craigslist search (no city subdomain) for a make/model.
+    Card-only — does NOT visit detail pages (fast).
+    Returns list of [year, mileage, price] entries.
+    """
+    results = []
+    params = {"query": f"{make} {model}", "auto_title": "clean", "hasPic": "1"}
+    url = f"{CL_NATIONAL_BASE}/search/cto?{urlencode(params)}"
+
+    page = context.new_page()
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=15_000)
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+            page.wait_for_selector("[data-pid]", timeout=8_000)
+        except PWTimeout:
+            logger.debug(f"Comps: no CL national results for {make} {model}")
+            return results
+
+        cards = page.locator("[data-pid]")
+        total = min(cards.count(), MAX_COMPS_PER_VEHICLE)
+
+        for i in range(total):
             try:
-                page.wait_for_selector("[data-pid]", timeout=8_000)
-            except PWTimeout:
-                logger.debug(f"Comps: no CL national results for {make} {model}")
-                return results
-
-            cards = page.locator("[data-pid]")
-            total = min(cards.count(), MAX_COMPS_PER_VEHICLE)
-
-            for i in range(total):
-                try:
-                    card = cards.nth(i)
-
-                    price_el = card.locator(".price, .priceinfo")
-                    if not price_el.count():
-                        continue
-                    price = _parse_price(price_el.first.inner_text())
-                    if not price or price < 500:
-                        continue
-
-                    title = ""
-                    label = card.locator(".label")
-                    if label.count():
-                        title = label.first.inner_text().strip()
-                    year = _parse_year(title)
-
-                    mileage = None
-                    meta = card.locator(".meta")
-                    if meta.count():
-                        mileage = _parse_mileage(meta.first.inner_text())
-
-                    results.append((year, mileage, price))
-                except Exception:
+                card = cards.nth(i)
+                price_el = card.locator(".price, .priceinfo")
+                if not price_el.count():
                     continue
+                price = _parse_price(price_el.first.inner_text())
+                if not price or price < 500:
+                    continue
+                title = ""
+                label = card.locator(".label")
+                if label.count():
+                    title = label.first.inner_text().strip()
+                year = _parse_year(title)
+                mileage = None
+                meta = card.locator(".meta")
+                if meta.count():
+                    mileage = _parse_mileage(meta.first.inner_text())
+                results.append([year, mileage, price])
+            except Exception:
+                continue
 
-        except Exception as e:
-            logger.warning(f"Comps: CL national page error for {make} {model}: {e}")
-        finally:
-            page.close()
+    except Exception as e:
+        logger.warning(f"Comps: CL national page error for {make} {model}: {e}")
+    finally:
+        page.close()
 
-        return results
+    return results
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
