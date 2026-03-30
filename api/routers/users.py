@@ -73,31 +73,34 @@ def create_search(user_id: int, body: CreateSearchRequest, user: dict = Depends(
     return _user_db.create_search(user_id, body.name, body.criteria.model_dump())
 
 
-@router.post("/{user_id}/searches/preview")
-def preview_search(user_id: int, body: SearchCriteria, user: dict = Depends(current_user)):
-    """Filter current listings using ad-hoc criteria (no saved search needed)."""
-    _require_self(user_id, user)
-    c = body.model_dump()
-    rows = []
-    if os.path.exists(_MAIN_DB):
-        conn = sqlite3.connect(_MAIN_DB)
-        conn.row_factory = sqlite3.Row
-        try:
-            rows = conn.execute(
-                "SELECT * FROM listings ORDER BY total_score DESC LIMIT 500"
-            ).fetchall()
-        except sqlite3.OperationalError:
-            rows = []
-        finally:
-            conn.close()
+def _fetch_all_listings() -> list[dict]:
+    """Return all listings from the main DB, best-scored first."""
+    if not os.path.exists(_MAIN_DB):
+        return []
+    conn = sqlite3.connect(_MAIN_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM listings ORDER BY total_score DESC LIMIT 1000"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
 
+
+def _apply_criteria(rows: list[dict], c: dict) -> list[dict]:
+    """Filter a list of listing dicts by search criteria."""
     results = []
-    for row in rows:
-        d = dict(row)
-        if c.get("make") and (d.get("make") or "").lower() != c["make"].lower():
-            continue
-        if c.get("model") and (d.get("model") or "").lower() != c["model"].lower():
-            continue
+    for d in rows:
+        # make: substring match (e.g. "Toyota" matches "Toyota" or "Toyota Trucks")
+        if c.get("make"):
+            if c["make"].lower() not in (d.get("make") or "").lower():
+                continue
+        # model: substring match (e.g. "Tacoma" matches "Tacoma TRD", "Camry" matches "Camry LE")
+        if c.get("model"):
+            if c["model"].lower() not in (d.get("model") or "").lower():
+                continue
         if c.get("min_year") and (d.get("year") or 0) < c["min_year"]:
             continue
         if c.get("max_year") and (d.get("year") or 9999) > c["max_year"]:
@@ -108,12 +111,24 @@ def preview_search(user_id: int, body: SearchCriteria, user: dict = Depends(curr
             continue
         if c.get("max_mileage") and (d.get("mileage") or 0) > c["max_mileage"]:
             continue
+        # query: substring match across title, make, model, and description
         if c.get("query"):
-            title = (d.get("title") or "").lower()
-            if c["query"].lower() not in title:
+            q = c["query"].lower()
+            searchable = " ".join(filter(None, [
+                d.get("title"), d.get("make"), d.get("model"), d.get("description", "")
+            ])).lower()
+            if q not in searchable:
                 continue
         results.append(d)
+    return results
 
+
+@router.post("/{user_id}/searches/preview")
+def preview_search(user_id: int, body: SearchCriteria, user: dict = Depends(current_user)):
+    """Filter current listings using ad-hoc criteria (no saved search needed)."""
+    _require_self(user_id, user)
+    rows = _fetch_all_listings()
+    results = _apply_criteria(rows, body.model_dump())
     return {"count": len(results), "results": results}
 
 
@@ -126,43 +141,8 @@ def execute_search(user_id: int, search_id: int, user: dict = Depends(current_us
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Search not found")
 
     c = saved["criteria"]
-    rows = []
-    if os.path.exists(_MAIN_DB):
-        conn = sqlite3.connect(_MAIN_DB)
-        conn.row_factory = sqlite3.Row
-        try:
-            rows = conn.execute(
-                "SELECT * FROM listings ORDER BY total_score DESC LIMIT 500"
-            ).fetchall()
-        except sqlite3.OperationalError:
-            # listings table doesn't exist yet (pipeline never run)
-            rows = []
-        finally:
-            conn.close()
-
-    results = []
-    for row in rows:
-        d = dict(row)
-        if c.get("make") and (d.get("make") or "").lower() != c["make"].lower():
-            continue
-        if c.get("model") and (d.get("model") or "").lower() != c["model"].lower():
-            continue
-        if c.get("min_year") and (d.get("year") or 0) < c["min_year"]:
-            continue
-        if c.get("max_year") and (d.get("year") or 9999) > c["max_year"]:
-            continue
-        if c.get("min_price") and (d.get("asking_price") or 0) < c["min_price"]:
-            continue
-        if c.get("max_price") and (d.get("asking_price") or 999999) > c["max_price"]:
-            continue
-        if c.get("max_mileage") and (d.get("mileage") or 0) > c["max_mileage"]:
-            continue
-        if c.get("query"):
-            title = (d.get("title") or "").lower()
-            if c["query"].lower() not in title:
-                continue
-        results.append(d)
-
+    rows = _fetch_all_listings()
+    results = _apply_criteria(rows, c)
     _user_db.save_search_results(search_id, results)
     return {"search_id": search_id, "count": len(results), "results": results}
 

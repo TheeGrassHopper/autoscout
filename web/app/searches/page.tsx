@@ -12,6 +12,8 @@ import {
   deleteAllSavedSearches,
   getSavedSearches,
   previewSearch,
+  runPipeline,
+  getPipelineStatus,
 } from "@/lib/api";
 
 // ── Default searches (always shown, cannot be deleted) ────────────────────────
@@ -239,10 +241,11 @@ function CriteriaForm({
   );
 }
 
-// ── Search card (self-contained: runs, shows inline results, edits) ───────────
+// ── Search card (self-contained: runs, scrapes, shows inline results, edits) ──
+
+type ScrapePhase = "idle" | "scraping" | "done" | "error";
 
 function SearchCard({
-  cardKey,
   name,
   criteria,
   isDefault,
@@ -251,7 +254,6 @@ function SearchCard({
   onUpdate,
   onDelete,
 }: {
-  cardKey: string;
   name: string;
   criteria: SearchCriteria;
   isDefault?: boolean;
@@ -260,39 +262,94 @@ function SearchCard({
   onUpdate?: (name: string, c: SearchCriteria) => void;
   onDelete?: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [results, setResults] = useState<Deal[] | null>(null);
-  const [error, setError]     = useState<string | null>(null);
+  const [editing,     setEditing]     = useState(false);
+  const [searching,   setSearching]   = useState(false);
+  const [scrapePhase, setScrapePhase] = useState<ScrapePhase>("idle");
+  const [scrapeMsg,   setScrapeMsg]   = useState("");
+  const [results,     setResults]     = useState<Deal[] | null>(null);
+  const [error,       setError]       = useState<string | null>(null);
   const user = getUser();
 
-  const run = async (c: SearchCriteria) => {
+  /** Filter existing DB listings for these criteria */
+  const search = async (c: SearchCriteria) => {
     if (!user) return;
-    setRunning(true);
+    setSearching(true);
     setError(null);
     setResults(null);
     try {
       const { results: deals } = await previewSearch(user.id, c);
       setResults(deals);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to run search");
+      setError(err instanceof Error ? err.message : "Search failed");
     } finally {
-      setRunning(false);
+      setSearching(false);
     }
   };
+
+  /** Trigger pipeline scrape for this query, poll until done, then show results */
+  const scrape = async (c: SearchCriteria) => {
+    if (!user || scrapePhase === "scraping") return;
+    setScrapePhase("scraping");
+    setScrapeMsg("Starting scrape…");
+    setResults(null);
+    setError(null);
+    try {
+      await runPipeline(
+        c.query ?? "",
+        false,                             // dryRun = false → actually save listings
+        c.zip_code ?? "",
+        c.radius_miles ?? 0,
+        false,                             // skip FB (slow) for per-search scrapes
+        {
+          minYear:    c.min_year  ?? undefined,
+          maxYear:    c.max_year  ?? undefined,
+          maxPrice:   c.max_price ?? undefined,
+          maxMileage: c.max_mileage ?? undefined,
+        }
+      );
+    } catch (err: unknown) {
+      setScrapePhase("error");
+      setError(err instanceof Error ? err.message : "Pipeline failed to start");
+      return;
+    }
+
+    // Poll pipeline status until it finishes
+    setScrapeMsg("Scraping listings…");
+    const start = Date.now();
+    const MAX_WAIT_MS = 5 * 60 * 1000; // 5 min timeout
+    let finished = false;
+    while (Date.now() - start < MAX_WAIT_MS) {
+      await new Promise((r) => setTimeout(r, 4000));
+      try {
+        const status = await getPipelineStatus();
+        if (!status.running) { finished = true; break; }
+        const elapsed = Math.round((Date.now() - start) / 1000);
+        setScrapeMsg(`Scraping… ${elapsed}s`);
+      } catch { /* ignore poll errors */ }
+    }
+
+    if (!finished) {
+      setScrapePhase("error");
+      setError("Scrape timed out — try Run to see partial results");
+      return;
+    }
+
+    setScrapeMsg("Scrape complete — loading results…");
+    setScrapePhase("done");
+    await search(c);
+  };
+
+  const busy = searching || scrapePhase === "scraping";
 
   return (
     <div className={`bg-white rounded-xl shadow-sm border transition-colors ${
       editing ? "border-slate-300" : results !== null ? "border-slate-200" : "border-gray-100 hover:border-slate-200"
     }`}>
       <div className="p-4">
-        {/* Header: click left side to toggle edit */}
+        {/* Header */}
         <div className="flex flex-wrap items-start gap-3">
-          <button
-            className="flex-1 min-w-0 text-left"
-            onClick={() => setEditing((v) => !v)}
-          >
-            <div className="flex items-center gap-2">
+          <button className="flex-1 min-w-0 text-left" onClick={() => setEditing((v) => !v)}>
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-slate-900 text-sm">{name}</span>
               {isDefault && (
                 <span className="text-[10px] font-medium px-1.5 py-0.5 bg-slate-100 text-slate-400 rounded">
@@ -304,7 +361,12 @@ function SearchCard({
                   {results.length} results
                 </span>
               )}
-              <span className="text-[11px] text-slate-300 ml-1">{editing ? "▲" : "▼"}</span>
+              {scrapePhase === "scraping" && (
+                <span className="text-[10px] font-medium px-1.5 py-0.5 bg-amber-50 text-amber-600 rounded animate-pulse">
+                  {scrapeMsg}
+                </span>
+              )}
+              <span className="text-[11px] text-slate-300">{editing ? "▲" : "▼"}</span>
             </div>
             <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
               {criteria.make && (
@@ -316,9 +378,7 @@ function SearchCard({
                 <span className="text-xs text-slate-400">"{criteria.query}"</span>
               )}
               {criteria.min_year && (
-                <span className="text-xs text-slate-500">
-                  {criteria.min_year}–{criteria.max_year ?? "now"}
-                </span>
+                <span className="text-xs text-slate-500">{criteria.min_year}–{criteria.max_year ?? "now"}</span>
               )}
               {criteria.max_price && (
                 <span className="text-xs text-slate-500">≤ {fmt(criteria.max_price)}</span>
@@ -329,18 +389,28 @@ function SearchCard({
             </div>
           </button>
 
-          {/* Quick-run + delete */}
+          {/* Action buttons */}
           <div className="flex gap-2 flex-shrink-0 items-center">
-            {running && (
-              <span className="text-xs text-slate-400 animate-pulse">Searching…</span>
-            )}
+            {/* Run: filter existing DB */}
             <button
-              onClick={(e) => { e.stopPropagation(); run(criteria); }}
-              disabled={running}
+              onClick={(e) => { e.stopPropagation(); search(criteria); }}
+              disabled={busy}
+              title="Filter your current scraped listings"
               className="px-3 py-1.5 bg-slate-900 text-white text-xs font-medium rounded-lg hover:bg-slate-700 disabled:opacity-40 transition-colors"
             >
-              {running ? "…" : "▶ Run"}
+              {searching ? "Searching…" : "▶ Run"}
             </button>
+
+            {/* Scrape: trigger pipeline for this query */}
+            <button
+              onClick={(e) => { e.stopPropagation(); scrape(criteria); }}
+              disabled={busy}
+              title="Scrape fresh listings from Craigslist for this search"
+              className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-40 transition-colors"
+            >
+              {scrapePhase === "scraping" ? "Scraping…" : "⬇ Scrape"}
+            </button>
+
             {onDelete && !editing && (
               <button
                 onClick={(e) => { e.stopPropagation(); onDelete(); }}
@@ -353,9 +423,7 @@ function SearchCard({
         </div>
 
         {/* Error */}
-        {error && (
-          <div className="mt-2 text-xs text-red-500">{error}</div>
-        )}
+        {error && <div className="mt-2 text-xs text-red-500">{error}</div>}
 
         {/* Inline results */}
         {results !== null && !editing && (
@@ -368,9 +436,9 @@ function SearchCard({
             name={name}
             criteria={criteria}
             isDefault={isDefault}
-            running={running}
+            running={busy}
             saving={saving}
-            onRun={(c) => { run(c); setEditing(false); }}
+            onRun={(c) => { search(c); setEditing(false); }}
             onSaveNew={(n, c) => { onSaveNew(n, c); setEditing(false); }}
             onUpdate={onUpdate ? (n, c) => { onUpdate(n, c); setEditing(false); } : undefined}
             onCancel={() => setEditing(false)}
@@ -565,7 +633,7 @@ export default function SearchesPage() {
           return (
             <SearchCard
               key={key}
-              cardKey={key}
+              
               name={s.name}
               criteria={s.criteria}
               isDefault
@@ -589,7 +657,7 @@ export default function SearchesPage() {
             return (
               <SearchCard
                 key={key}
-                cardKey={key}
+                
                 name={s.name}
                 criteria={s.criteria}
                 saving={saving === key}
