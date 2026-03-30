@@ -191,13 +191,14 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     use_vinaudit  = PRICING_SOURCES.get("vinaudit", False)  and bool(os.getenv("VINAUDIT_API_KEY"))
     use_kbb_apify = PRICING_SOURCES.get("kbb_apify", False) and bool(os.getenv("APIFY_API_TOKEN"))
     use_carsxe    = PRICING_SOURCES.get("carsxe", False)    and bool(os.getenv("CARSXE_API_KEY"))
-    logger.info(
-        "Pricing chain: "
-        + ("VinAudit → " if use_vinaudit else "")
-        + ("KBB/Apify → " if use_kbb_apify else "")
-        + ("CarsXE → " if use_carsxe else "")
-        + "depreciation model (fallback)"
-    )
+    active = [s for s, on in [
+        ("VinAudit", use_vinaudit),
+        ("KBB/Apify", use_kbb_apify),
+        ("CarsXE", use_carsxe),
+        ("Carvana comps", use_carvana),
+        ("local market", True),
+    ] if on]
+    logger.info("Pricing chain: " + " → ".join(active) if active else "Pricing chain: no sources enabled")
 
     # ── Step 3: Score listings ────────────────────────────────────────────────
     logger.info("STEP 3 — Scoring listings (parallel price lookups)")

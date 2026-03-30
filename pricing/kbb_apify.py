@@ -64,7 +64,11 @@ def get_kbb_apify_price(
         logger.debug("KBB/Apify: missing make/model/year — skipping")
         return None
 
-    cache_key = _cache_key(make, model, year)
+    # Normalize model to base name only (strip trim noise like "TRD", "SR5", "prerunner")
+    # so "Tacoma TRD Off-Road" and "Tacoma SR5" both cache as "Tacoma"
+    base_model = model.strip().split()[0]
+
+    cache_key = _cache_key(make, base_model, year)
     cached = _load_cache(cache_key)
     if cached:
         logger.debug(f"KBB/Apify cache hit: {year} {make} {model}")
@@ -78,15 +82,15 @@ def get_kbb_apify_price(
 
     try:
         client = ApifyClient(apify_token)
-        logger.info(f"KBB/Apify: fetching {year} {make} {model}…")
+        logger.info(f"KBB/Apify: fetching {year} {make} {base_model}…")
 
         run = client.actor(_ACTOR_ID).call(
-            run_input={"vehicles": [{"year": year, "make": make, "model": model}]},
+            run_input={"vehicles": [{"year": year, "make": make, "model": base_model}]},
             timeout_secs=120,
         )
 
         if not run or run.get("status") != "SUCCEEDED":
-            logger.warning(f"KBB/Apify: run failed for {year} {make} {model}: {run.get('status')}")
+            logger.warning(f"KBB/Apify: run failed for {year} {make} {base_model}: {run.get('status')}")
             return None
 
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
