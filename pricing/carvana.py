@@ -1,17 +1,21 @@
 """
 pricing/carvana.py
-Fetches real-market pricing from Carvana's internal API.
+Fetches Carvana retail comparable prices via camoufox (stealth Firefox browser).
 
 Strategy:
-  Load the Carvana SRP (search results page) with Playwright, then intercept
+  Load the Carvana SRP (search results page) with camoufox, then intercept
   the `merch/search/api/v2/pricing` response that fires automatically.
   That endpoint returns both `kbbValue` and `incentivizedPrice` for every
-  comparable vehicle shown — no scraping of HTML needed.
+  comparable vehicle shown — no HTML scraping needed.
+
+  camoufox replaces vanilla Playwright/Chromium to defeat Cloudflare Bot Fight Mode,
+  which blocks headless Chromium but not Firefox + camoufox fingerprinting.
 
 Returns:
   (carvana_price, kbb_value) tuple — both are medians across comparable listings.
 """
 
+import asyncio
 import logging
 import statistics
 import hashlib
@@ -44,12 +48,12 @@ def get_carvana_price(
         logger.debug(f"Carvana cache hit: {year} {make} {model}")
         return cached.get("carvana_price"), cached.get("kbb_value")
 
-    result = _fetch_from_carvana(make, model, year, mileage, year_range, mileage_range)
+    result = asyncio.run(_fetch_from_carvana(make, model, year, mileage, year_range, mileage_range))
     _save_cache(cache_key, {"carvana_price": result[0], "kbb_value": result[1]})
     return result
 
 
-def _fetch_from_carvana(
+async def _fetch_from_carvana(
     make: str,
     model: str,
     year: int,
@@ -58,14 +62,13 @@ def _fetch_from_carvana(
     mileage_range: int,
 ) -> tuple[Optional[int], Optional[int]]:
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+        from camoufox.async_api import AsyncCamoufox
     except ImportError:
-        logger.warning("Playwright not installed; skipping Carvana pricing")
+        logger.warning("camoufox not installed; skipping Carvana pricing")
         return None, None
 
-    make_slug = make.lower().replace(" ", "-")
-    model_slug = model.lower().split()[0].replace(" ", "-")  # base model only
-
+    make_slug  = make.lower().replace(" ", "-")
+    model_slug = model.lower().split()[0].replace(" ", "-")
     params = urlencode({
         "year-min": year - year_range,
         "year-max": year + year_range,
@@ -77,16 +80,15 @@ def _fetch_from_carvana(
     pricing_data: dict = {}
     vehicles_raw: list = []
 
-    def on_response(response):
+    async def on_response(response):
         if "search/api/v2/pricing" in response.url:
             try:
-                pricing_data.update(response.json())
+                pricing_data.update(await response.json())
             except Exception:
                 pass
         elif "search/api/v2" in response.url and "pricing" not in response.url:
-            # Vehicle listings endpoint — contains year, mileage, vehicleId
             try:
-                data = response.json()
+                data = await response.json()
                 if isinstance(data, dict):
                     for key in ("vehicles", "results", "data", "items"):
                         if isinstance(data.get(key), list):
@@ -96,30 +98,16 @@ def _fetch_from_carvana(
                 pass
 
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                )
-            )
-            page = context.new_page()
+        async with AsyncCamoufox(headless=True, geoip=False) as browser:
+            page = await browser.new_page()
             page.on("response", on_response)
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                # Wait up to 10s for the pricing API call to fire
-                page.wait_for_timeout(8_000)
-            except PWTimeout:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                await page.wait_for_timeout(8_000)
+            except Exception:
                 logger.debug(f"Carvana page timeout for {year} {make} {model}")
-            finally:
-                browser.close()
     except Exception as e:
-        logger.warning(f"Carvana Playwright error for {year} {make} {model}: {e}")
+        logger.warning(f"Carvana camoufox error for {year} {make} {model}: {e}")
         return None, None
 
     # Build vehicle metadata map: vehicle_id -> {year, mileage}
