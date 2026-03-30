@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import csv
 import logging
 import os
@@ -109,7 +110,7 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
             config={**effective_filters, "search_radius_miles": effective_radius, "zip_code": effective_zip},
             vehicle_types=VEHICLE_TYPES,
         )
-        cl_listings = scraper.scrape(query=query)
+        cl_listings = await asyncio.to_thread(scraper.scrape, query)
         for l in cl_listings:
             if l.listing_id not in seen_ids:
                 seen_ids.add(l.listing_id)
@@ -135,7 +136,8 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
             except Exception:
                 logger.warning("FB_COOKIES in .env is not valid JSON — skipping FB scrape")
         keywords = [query] if query else (SEARCH_QUERIES or [""])
-        fb_listings = scrape_facebook(
+        fb_listings = await asyncio.to_thread(
+            scrape_facebook,
             location=LOCATION["city"],
             keywords=[k for k in keywords if k],
             min_price=effective_filters["min_price"],
@@ -179,7 +181,7 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
         for l in all_raw
         if l.make and l.model
     }
-    comps_engine.fetch_all_comps(unique_vehicles)
+    await asyncio.to_thread(comps_engine.fetch_all_comps, unique_vehicles)
 
     # ── Step 2: Price lookups ─────────────────────────────────────────────────
     logger.info("STEP 2 — Fetching market values (Carvana + Local Market + KBB)")
