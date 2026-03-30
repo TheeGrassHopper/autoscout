@@ -80,6 +80,35 @@ def scrape_facebook(
 
     _check_cookie_expiry(fb_cookies)
 
+    city_slug = location.lower().replace(" ", "").replace(",", "")
+    query = keywords[0] if keywords else ""
+
+    # ── Primary: camoufox stealth browser (bypasses FB bot detection) ─────────
+    logger.info(f"FB Marketplace: trying camoufox scraper (query={query!r}, radius={radius_miles}mi)")
+    from scrapers.facebook_camoufox import (
+        scrape_fb_marketplace_async, _parse_price, _parse_year, _parse_mileage,
+    )
+    raw_items = asyncio.run(scrape_fb_marketplace_async(
+        city_slug=city_slug,
+        query=query,
+        min_price=min_price,
+        max_price=max_price,
+        radius_miles=radius_miles,
+        fb_cookies=fb_cookies,
+        max_items=100,
+    ))
+
+    if raw_items:
+        listings = _parse_camoufox_items(raw_items, location, max_mileage, seen_ids)
+        logger.info(f"FB camoufox: {len(listings)} listings parsed")
+        return listings
+
+    # ── Fallback: Apify actor (may be blocked, but worth trying) ──────────────
+    logger.warning("FB camoufox returned 0 items — falling back to Apify actor")
+    if not apify_token:
+        logger.warning("No APIFY_API_TOKEN — cannot fall back to Apify")
+        return []
+
     try:
         from apify_client import ApifyClient
     except ImportError:
@@ -87,88 +116,102 @@ def scrape_facebook(
         return []
 
     client = ApifyClient(apify_token)
-    city_slug = location.lower().replace(" ", "").replace(",", "")
-
-    # Build search URLs
     search_urls = _build_search_urls(city_slug, keywords, min_price, max_price, radius_miles)
-
-    # Build actor input with anti-blocking configuration
     run_input = _build_run_input(search_urls, fb_cookies)
+    logger.info(f"Triggering Apify FB Marketplace scrape — {len(search_urls)} URL(s)")
 
-    logger.info(
-        f"Triggering Apify FB Marketplace scrape — {len(search_urls)} URL(s), "
-        f"radius {radius_miles}mi, concurrency=1, proxy=residential"
-    )
-
-    # Retry loop with exponential backoff
     items = None
     last_error = None
     for attempt in range(1 + _MAX_RUN_RETRIES):
         if attempt > 0:
             delay = _RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)]
-            logger.warning(f"FB scrape retry {attempt}/{_MAX_RUN_RETRIES} — waiting {delay}s")
+            logger.warning(f"FB Apify retry {attempt}/{_MAX_RUN_RETRIES} — waiting {delay}s")
             time.sleep(delay)
-
         try:
             run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input, timeout_secs=360)
             run_status = run.get("status", "UNKNOWN")
-            run_id = run.get("id", "?")
-            logger.info(f"Apify run status: {run_status} (id={run_id}, attempt={attempt + 1})")
-
+            logger.info(f"Apify run status: {run_status} (id={run.get('id','?')}, attempt={attempt+1})")
             if run_status not in ("SUCCEEDED", "RUNNING"):
-                last_error = f"status={run_status}"
-                logger.warning(
-                    f"Apify run did not succeed — {last_error}. "
-                    f"Check https://console.apify.com/actors/runs/{run_id}"
-                )
-                continue
-
+                last_error = f"status={run_status}"; continue
             candidate_items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
-            logger.info(f"Apify returned {len(candidate_items)} FB items (attempt {attempt + 1})")
-
-            if candidate_items and items is not None and len(items) > 0:
-                # Log first item sample for diagnostics
-                first = candidate_items[0]
-                logger.info(f"FB item sample keys: {list(first.keys())[:10]}")
-                logger.info(
-                    f"FB item sample: price={first.get('price')}, "
-                    f"id={first.get('id')}, title={str(first.get('title',''))[:40]}"
-                )
-
-            # Check if results are all BLOCKED errors
+            logger.info(f"Apify returned {len(candidate_items)} FB items")
             if _all_blocked(candidate_items):
-                last_error = "BLOCKED"
-                logger.warning(
-                    f"FB Marketplace blocked (attempt {attempt + 1}) — "
-                    "actor hit bot detection on all requests"
-                )
-                continue
-
+                last_error = "BLOCKED"; continue
             items = candidate_items
-            break  # Success
-
+            break
         except Exception as e:
             last_error = str(e)
-            logger.warning(f"Apify FB call failed (attempt {attempt + 1}): {e}")
+            logger.warning(f"Apify FB call failed (attempt {attempt+1}): {e}")
 
-    # Final fallback if all attempts failed
     if items is None:
-        logger.error(
-            f"FB Marketplace blocked after {1 + _MAX_RUN_RETRIES} attempts — "
-            "consider: (1) refreshing FB_COOKIES, (2) upgrading to Apify RESIDENTIAL proxy, "
-            f"(3) setting FB_SCRAPER_ENABLED=false to suppress this. Last error: {last_error}"
-        )
+        logger.error(f"FB Marketplace: all methods failed. Last error: {last_error}")
         return []
 
-    if not items:
-        logger.warning(
-            "Apify returned 0 FB items — possible causes: cookies expired, "
-            "no listings match filters, or actor blocked"
+    listings = _parse_items(items, location, max_mileage, seen_ids)
+    logger.info(f"Facebook Marketplace: {len(listings)} listings (via Apify fallback)")
+    return listings
+
+
+# ── camoufox item parser ──────────────────────────────────────────────────────
+
+def _parse_camoufox_items(
+    raw_items: list,
+    location: str,
+    max_mileage: int,
+    seen_ids: set[str],
+) -> list[RawListing]:
+    """Convert camoufox GraphQL items into RawListing objects."""
+    from scrapers.facebook_camoufox import _parse_price, _parse_year, _parse_mileage
+    from scrapers.craigslist import CraigslistScraper
+
+    listings = []
+    for item in raw_items:
+        if item.get("is_pending"):
+            continue
+
+        lid = item.get("id", "")
+        fb_id = f"fb_{lid}"
+        if fb_id in seen_ids:
+            continue
+
+        price = _parse_price(item.get("price_str", ""))
+        if not price:
+            continue
+
+        subtitle = item.get("subtitle", "")
+        mileage  = _parse_mileage(subtitle)
+        year     = _parse_year(subtitle)
+
+        if mileage and mileage > max_mileage:
+            continue
+
+        title = (item.get("title", "") or "").strip()
+        description = subtitle
+        vin = _extract_vin(description)
+        title_status = _detect_title_status(title, description)
+
+        listing = RawListing(
+            listing_id=fb_id,
+            source="facebook",
+            url=item.get("url", f"https://www.facebook.com/marketplace/item/{lid}/"),
+            title=title,
+            price=price,
+            location=item.get("location", location),
+            description=description,
+            image_urls=[item["image_url"]] if item.get("image_url") else [],
+            mileage=mileage,
+            year=year,
+            vin=vin,
+            title_status=title_status,
         )
 
-    # Parse items into RawListing objects
-    listings = _parse_items(items, location, max_mileage, seen_ids)
-    logger.info(f"Facebook Marketplace: {len(listings)} new listings")
+        # Try to fill make/model/year from title
+        dummy = CraigslistScraper.__new__(CraigslistScraper)
+        dummy._parse_title_fields(listing, listing.title)
+
+        listings.append(listing)
+        seen_ids.add(fb_id)
+
     return listings
 
 

@@ -73,6 +73,50 @@ def create_search(user_id: int, body: CreateSearchRequest, user: dict = Depends(
     return _user_db.create_search(user_id, body.name, body.criteria.model_dump())
 
 
+@router.post("/{user_id}/searches/preview")
+def preview_search(user_id: int, body: SearchCriteria, user: dict = Depends(current_user)):
+    """Filter current listings using ad-hoc criteria (no saved search needed)."""
+    _require_self(user_id, user)
+    c = body.model_dump()
+    rows = []
+    if os.path.exists(_MAIN_DB):
+        conn = sqlite3.connect(_MAIN_DB)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT * FROM listings ORDER BY total_score DESC LIMIT 500"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+        finally:
+            conn.close()
+
+    results = []
+    for row in rows:
+        d = dict(row)
+        if c.get("make") and (d.get("make") or "").lower() != c["make"].lower():
+            continue
+        if c.get("model") and (d.get("model") or "").lower() != c["model"].lower():
+            continue
+        if c.get("min_year") and (d.get("year") or 0) < c["min_year"]:
+            continue
+        if c.get("max_year") and (d.get("year") or 9999) > c["max_year"]:
+            continue
+        if c.get("min_price") and (d.get("asking_price") or 0) < c["min_price"]:
+            continue
+        if c.get("max_price") and (d.get("asking_price") or 999999) > c["max_price"]:
+            continue
+        if c.get("max_mileage") and (d.get("mileage") or 0) > c["max_mileage"]:
+            continue
+        if c.get("query"):
+            title = (d.get("title") or "").lower()
+            if c["query"].lower() not in title:
+                continue
+        results.append(d)
+
+    return {"count": len(results), "results": results}
+
+
 @router.post("/{user_id}/searches/{search_id}/execute")
 def execute_search(user_id: int, search_id: int, user: dict = Depends(current_user)):
     """Filter current listings in the main DB using the saved search criteria."""
@@ -121,6 +165,16 @@ def execute_search(user_id: int, search_id: int, user: dict = Depends(current_us
 
     _user_db.save_search_results(search_id, results)
     return {"search_id": search_id, "count": len(results), "results": results}
+
+
+@router.patch("/{user_id}/searches/{search_id}")
+def update_search(user_id: int, search_id: int, body: CreateSearchRequest, user: dict = Depends(current_user)):
+    """Update the name and/or criteria of an existing saved search."""
+    _require_self(user_id, user)
+    updated = _user_db.update_search(search_id, user_id, body.name, body.criteria.model_dump())
+    if not updated:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Search not found")
+    return updated
 
 
 @router.delete("/{user_id}/searches/{search_id}", status_code=204)

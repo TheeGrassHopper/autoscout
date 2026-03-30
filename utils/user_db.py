@@ -215,6 +215,18 @@ class UserDB:
         with self._conn() as conn:
             return self._fetch_search(conn, search_id)
 
+    def update_search(self, search_id: int, user_id: int, name: str, criteria: dict) -> Optional[dict]:
+        now = _now()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE saved_searches SET name = ?, criteria = ?, updated_at = ?"
+                " WHERE id = ? AND user_id = ?",
+                (name, json.dumps(criteria), now, search_id, user_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            return self._fetch_search(conn, search_id)
+
     def delete_search(self, search_id: int, user_id: int) -> bool:
         with self._conn() as conn:
             cur = conn.execute(

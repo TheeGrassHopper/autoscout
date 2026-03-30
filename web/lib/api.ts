@@ -236,6 +236,16 @@ export interface SavedSearch {
   updated_at: string;
 }
 
+export async function previewSearch(userId: number, criteria: SearchCriteria): Promise<{ count: number; results: Deal[] }> {
+  const res = await fetch(`${BASE}/users/${userId}/searches/preview`, {
+    method: "POST",
+    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify(criteria),
+  });
+  if (!res.ok) throw new Error("Failed to run search");
+  return res.json();
+}
+
 export async function getSavedSearches(userId: number): Promise<SavedSearch[]> {
   const res = await fetch(`${BASE}/users/${userId}/searches`, { cache: "no-store", headers: userHeaders() });
   if (!res.ok) throw new Error("Failed to load searches");
@@ -249,6 +259,16 @@ export async function createSavedSearch(userId: number, name: string, criteria: 
     body: JSON.stringify({ name, criteria }),
   });
   if (!res.ok) throw new Error("Failed to create search");
+  return res.json();
+}
+
+export async function updateSavedSearch(userId: number, searchId: number, name: string, criteria: SearchCriteria): Promise<SavedSearch> {
+  const res = await fetch(`${BASE}/users/${userId}/searches/${searchId}`, {
+    method: "PATCH",
+    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, criteria }),
+  });
+  if (!res.ok) throw new Error("Failed to update search");
   return res.json();
 }
 
