@@ -23,6 +23,12 @@ const CLASS_ICON: Record<DealClass, string> = {
   poor: "❌",
 };
 
+const CLASS_BORDER: Record<DealClass, string> = {
+  great: "border-l-emerald-500",
+  fair: "border-l-amber-400",
+  poor: "border-l-red-400",
+};
+
 function fmt(n?: number | null) {
   if (n == null) return "—";
   return `$${n.toLocaleString()}`;
@@ -43,17 +49,12 @@ const TITLE_BADGE: Record<string, string> = {
 };
 
 function TitleBadge({ status }: { status?: string | null }) {
-  if (!status || status === "unknown") return <span className="text-slate-300 text-xs">—</span>;
+  if (!status || status === "unknown") return null;
   return (
     <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold capitalize ${TITLE_BADGE[status] ?? "bg-gray-100 text-gray-500"}`}>
       {status}
     </span>
   );
-}
-
-function timeAgo(dateStr?: string | null): string {
-  if (!dateStr) return "—";
-  return dateStr;
 }
 
 function daysAgo(dateStr?: string | null): string | null {
@@ -231,7 +232,6 @@ function ImageGallery({ urls }: { urls: string[] }) {
   const prev = (e: React.MouseEvent) => { e.stopPropagation(); setLightbox((n) => (n != null && n > 0 ? n - 1 : n)); };
   const next = (e: React.MouseEvent) => { e.stopPropagation(); setLightbox((n) => (n != null && n < visible.length - 1 ? n + 1 : n)); };
 
-  // keyboard navigation
   const handleKey = (e: KeyboardEvent) => {
     if (lightbox === null) return;
     if (e.key === "ArrowLeft" && lightbox > 0) setLightbox(lightbox - 1);
@@ -248,7 +248,6 @@ function ImageGallery({ urls }: { urls: string[] }) {
 
   return (
     <>
-      {/* Thumbnail strip */}
       <div className="relative">
         <div className="flex gap-2 overflow-x-auto pb-2 snap-x snap-mandatory scrollbar-thin">
           {urls.map((url, i) => (
@@ -270,29 +269,18 @@ function ImageGallery({ urls }: { urls: string[] }) {
         )}
       </div>
 
-      {/* Lightbox */}
       {lightbox !== null && (
         <div
           className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center"
           onClick={() => setLightbox(null)}
         >
-          {/* Close */}
           <button className="absolute top-4 right-4 text-white text-2xl hover:opacity-70 z-10" onClick={() => setLightbox(null)}>✕</button>
-
-          {/* Counter */}
           <div className="absolute top-4 left-1/2 -translate-x-1/2 text-white text-sm bg-black/40 px-3 py-1 rounded-full">
             {lightbox + 1} / {visible.length}
           </div>
-
-          {/* Prev */}
           {lightbox > 0 && (
-            <button
-              className="absolute left-3 md:left-6 text-white text-4xl hover:opacity-70 px-3 py-6 z-10"
-              onClick={prev}
-            >‹</button>
+            <button className="absolute left-3 md:left-6 text-white text-4xl hover:opacity-70 px-3 py-6 z-10" onClick={prev}>‹</button>
           )}
-
-          {/* Main image */}
           <img
             src={visible[lightbox]}
             alt={`Photo ${lightbox + 1}`}
@@ -300,16 +288,9 @@ function ImageGallery({ urls }: { urls: string[] }) {
             className="max-h-[85vh] max-w-[90vw] object-contain rounded"
             onClick={(e) => e.stopPropagation()}
           />
-
-          {/* Next */}
           {lightbox < visible.length - 1 && (
-            <button
-              className="absolute right-3 md:right-6 text-white text-4xl hover:opacity-70 px-3 py-6 z-10"
-              onClick={next}
-            >›</button>
+            <button className="absolute right-3 md:right-6 text-white text-4xl hover:opacity-70 px-3 py-6 z-10" onClick={next}>›</button>
           )}
-
-          {/* Thumbnail strip at bottom */}
           {visible.length > 1 && (
             <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-1.5 px-4 overflow-x-auto">
               {visible.map((url, i) => (
@@ -335,15 +316,11 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col md:flex-row" onClick={onClose}>
-      {/* Backdrop */}
       <div className="flex-1 bg-black/40" />
-
-      {/* Panel — bottom sheet on mobile, right sidebar on desktop */}
       <div
         className="w-full md:w-[520px] bg-white max-h-[92vh] md:max-h-none md:h-full overflow-y-auto shadow-2xl rounded-t-2xl md:rounded-none p-6 md:p-8 space-y-5"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Drag handle — mobile only */}
         <div className="md:hidden flex justify-center -mt-2 mb-2">
           <div className="w-10 h-1 rounded-full bg-gray-300" />
         </div>
@@ -359,14 +336,12 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl flex-shrink-0">✕</button>
         </div>
 
-        {/* Image gallery */}
         {deal.image_urls && deal.image_urls.length > 0 ? (
           <ImageGallery urls={deal.image_urls} />
         ) : (
           <div className="text-xs text-slate-400 italic">No images found</div>
         )}
 
-        {/* Price grid */}
         <div className="grid grid-cols-2 gap-2 md:gap-3">
           {[
             { label: "Asking Price", value: fmt(deal.asking_price), highlight: true },
@@ -386,7 +361,6 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
           ))}
         </div>
 
-        {/* vs Market */}
         {savings != null && (
           <div className={`rounded-lg p-4 ${savings > 0 ? "bg-emerald-50" : "bg-red-50"}`}>
             <div className="text-xs font-medium mb-1 text-slate-500">vs Market Value</div>
@@ -396,7 +370,6 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
           </div>
         )}
 
-        {/* Carvana */}
         <div className="rounded-lg border border-gray-100 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -410,7 +383,6 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
           </div>
         </div>
 
-        {/* CarMax */}
         <div className="rounded-lg border border-gray-100 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -424,13 +396,11 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
           </div>
         </div>
 
-        {/* View listing */}
         <a href={deal.url} target="_blank" rel="noopener noreferrer"
           className="block w-full text-center py-3 bg-slate-900 text-white font-medium rounded-lg hover:bg-slate-700 transition-colors">
           View Listing ↗
         </a>
 
-        {/* VIN / Carvana offer block — always visible */}
         <CarvanaOfferSection deal={deal} />
 
         <div className="text-xs text-slate-400 space-y-1">
@@ -444,59 +414,134 @@ function DealDrawer({ deal, onClose }: { deal: Deal; onClose: () => void }) {
   );
 }
 
-// ── Mobile Deal Card ──────────────────────────────────────────────────────────
+// ── Signal Card (unified mobile + desktop) ────────────────────────────────────
 
-function DealCard({ d, onClick, isSaved, onToggle }: {
+function BelowMarketBar({ asking, market }: { asking: number; market: number }) {
+  const pct = Math.round(((market - asking) / market) * 100);
+  const absPct = Math.min(Math.abs(pct), 50); // cap bar at 50%
+  const below = pct > 0;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-slate-500">vs Market</span>
+        <span className={`text-xs font-bold ${below ? "text-emerald-600" : "text-red-500"}`}>
+          {below ? `▼ ${pct}% below` : `▲ ${Math.abs(pct)}% above`}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all ${below ? "bg-emerald-500" : "bg-red-400"}`}
+          style={{ width: `${(absPct / 50) * 100}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function SignalCard({ d, onClick, isSaved, onToggle }: {
   d: Deal;
   onClick: () => void;
   isSaved: boolean;
   onToggle: (e: React.MouseEvent, id: string) => void;
 }) {
+  const reference = d.blended_market_value ?? d.kbb_value;
+  const savings = d.savings ?? (reference ? reference - d.asking_price : null);
+  const posted = daysAgo(d.posted_date);
+  const thumb = d.image_urls?.[0];
+
   return (
-    <div onClick={onClick} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-2 cursor-pointer active:bg-gray-50">
-      <div className="flex items-center justify-between gap-2">
-        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${CLASS_BADGE[d.deal_class]}`}>
-          {CLASS_ICON[d.deal_class]} {d.total_score}
-        </span>
-        <div className="flex items-center gap-2">
-          <TitleBadge status={d.title_status} />
-          <span className="text-xs text-slate-400">{d.source}</span>
-          <StarButton listingId={d.listing_id} isSaved={isSaved} onToggle={onToggle} />
-        </div>
-      </div>
-
-      <div className="font-semibold text-slate-900 leading-snug">{d.title}</div>
-      <div className="text-xs text-slate-400">{d.year} · {d.make} {d.model} · {fmtMi(d.mileage)}</div>
-
-      <div className="flex items-center gap-3 pt-1">
-        <div>
-          <div className="text-xs text-slate-400">Asking</div>
-          <div className="font-bold text-slate-900">{fmt(d.asking_price)}</div>
-        </div>
-        {d.carvana_value && (
-          <div>
-            <div className="text-xs text-slate-400">Carvana</div>
-            <div className="font-bold text-[#00aed9]">{fmt(d.carvana_value)}</div>
+    <div
+      onClick={onClick}
+      className={`bg-white rounded-xl border border-gray-100 border-l-4 ${CLASS_BORDER[d.deal_class]} shadow-sm cursor-pointer hover:shadow-md transition-shadow`}
+    >
+      <div className="flex gap-0">
+        {/* Thumbnail */}
+        {thumb && (
+          <div className="flex-shrink-0 w-28 sm:w-36">
+            <img
+              src={thumb}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover rounded-r-none rounded-l-[10px] min-h-[100px]"
+            />
           </div>
         )}
-        {d.profit_estimate != null && (
-          <div className="ml-auto text-right">
-            <div className="text-xs text-slate-400">Est. Profit</div>
-            <div className={`font-bold ${d.profit_estimate > 0 ? "text-emerald-600" : "text-red-500"}`}>
-              {fmt(d.profit_estimate)}
-              {d.profit_margin_pct != null && (
-                <span className="text-xs font-normal ml-1">{(d.profit_margin_pct * 100).toFixed(0)}%</span>
-              )}
+
+        {/* Content */}
+        <div className="flex-1 min-w-0 p-4 space-y-2.5">
+          {/* Row 1: badge + meta + star */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold ${CLASS_BADGE[d.deal_class]}`}>
+              {CLASS_ICON[d.deal_class]} {d.total_score}/100
+            </span>
+            {d.title_status && d.title_status !== "clean" && d.title_status !== "unknown" && (
+              <TitleBadge status={d.title_status} />
+            )}
+            <span className="text-xs px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded">{d.source}</span>
+            <div className="ml-auto" onClick={(e) => e.stopPropagation()}>
+              <StarButton listingId={d.listing_id} isSaved={isSaved} onToggle={onToggle} />
             </div>
           </div>
-        )}
-      </div>
 
-      {d.posted_date && (
-        <div className="text-xs text-slate-400">
-          Posted {[d.posted_date, daysAgo(d.posted_date)].filter(Boolean).join(" · ")}
+          {/* Row 2: title */}
+          <div className="font-semibold text-slate-900 leading-snug line-clamp-1">{d.title}</div>
+
+          {/* Row 3: meta */}
+          <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+            <span>{d.year} · {d.make} {d.model}</span>
+            <span>{fmtMi(d.mileage)}</span>
+            {d.location && <span className="truncate">{d.location}</span>}
+            {posted && (
+              <span className={`font-medium ${parseInt(posted) >= 14 ? "text-amber-600" : "text-slate-500"}`}>
+                🕐 {posted}
+              </span>
+            )}
+          </div>
+
+          {/* Row 4: price + bar */}
+          <div className="flex items-end gap-4 flex-wrap">
+            <div>
+              <div className="text-xs text-slate-400">Asking</div>
+              <div className="text-lg font-bold text-slate-900">{fmt(d.asking_price)}</div>
+            </div>
+            {reference != null && (
+              <div>
+                <div className="text-xs text-slate-400">Market</div>
+                <div className="text-sm font-semibold text-slate-600">{fmt(reference)}</div>
+              </div>
+            )}
+            {d.carvana_value != null && (
+              <div>
+                <div className="text-xs text-slate-400">Carvana</div>
+                <div className="text-sm font-semibold text-[#00aed9]">{fmt(d.carvana_value)}</div>
+              </div>
+            )}
+          </div>
+
+          {/* Row 5: % below market bar */}
+          {reference != null && savings != null && (
+            <BelowMarketBar asking={d.asking_price} market={reference} />
+          )}
+
+          {/* Row 6: actions */}
+          <div className="flex items-center gap-2 pt-1" onClick={(e) => e.stopPropagation()}>
+            <a
+              href={d.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 text-xs font-medium bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-colors"
+            >
+              View Listing ↗
+            </a>
+            <button
+              onClick={(e) => { e.stopPropagation(); onClick(); }}
+              className="px-3 py-1.5 text-xs font-medium bg-[#00aed9]/10 text-[#00aed9] rounded-lg hover:bg-[#00aed9]/20 transition-colors"
+            >
+              🤖 Get Offer
+            </button>
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -521,26 +566,12 @@ function sortDeals(deals: Deal[], key: SortKey, dir: SortDir): Deal[] {
   });
 }
 
-function SortHeader({ label, sortKey, current, dir, onClick }: {
-  label: string;
-  sortKey: SortKey;
-  current: SortKey;
-  dir: SortDir;
-  onClick: (k: SortKey) => void;
-}) {
-  const active = current === sortKey;
-  return (
-    <th
-      className="px-4 py-3 font-medium cursor-pointer select-none hover:text-slate-800 whitespace-nowrap"
-      onClick={() => onClick(sortKey)}
-    >
-      {label}{" "}
-      <span className={active ? "text-slate-700" : "text-slate-300"}>
-        {active ? (dir === "asc" ? "▲" : "▼") : "⇅"}
-      </span>
-    </th>
-  );
-}
+const SORT_OPTIONS: { label: string; key: SortKey }[] = [
+  { label: "Score", key: "total_score" },
+  { label: "Profit", key: "profit_estimate" },
+  { label: "Price", key: "asking_price" },
+  { label: "Mileage", key: "mileage" },
+];
 
 export default function DealsPage() {
   const [deals, setDeals] = useState<Deal[]>([]);
@@ -557,7 +588,6 @@ export default function DealsPage() {
     else { setSortKey(key); setSortDir("desc"); }
   }
 
-  // Load favorite IDs on mount so stars reflect state across all filter tabs
   useEffect(() => {
     getFavorites()
       .then((favs) => setFavoriteIds(new Set(favs.map((f) => f.listing_id))))
@@ -579,7 +609,6 @@ export default function DealsPage() {
   async function toggleFavorite(e: React.MouseEvent, listingId: string) {
     e.stopPropagation();
     const isSaved = favoriteIds.has(listingId);
-    // Optimistic update
     setFavoriteIds((prev) => {
       const next = new Set(prev);
       isSaved ? next.delete(listingId) : next.add(listingId);
@@ -589,7 +618,6 @@ export default function DealsPage() {
       if (isSaved) await removeFavorite(listingId);
       else await saveFavorite(listingId);
     } catch {
-      // Rollback on error
       setFavoriteIds((prev) => {
         const next = new Set(prev);
         isSaved ? next.add(listingId) : next.delete(listingId);
@@ -609,15 +637,28 @@ export default function DealsPage() {
     sortDir,
   );
 
+  const greatCount = deals.filter((d) => d.deal_class === "great").length;
+  const fairCount = deals.filter((d) => d.deal_class === "fair").length;
+
   return (
-    <div className="p-4 md:p-8 space-y-4 md:space-y-6 max-w-[1400px] mx-auto">
-      <div>
-        <h1 className="text-xl md:text-2xl font-bold text-slate-900">Deals</h1>
-        <p className="text-sm text-slate-500 mt-1">{deals.length} listings found</p>
+    <div className="p-4 md:p-8 space-y-4 md:space-y-6 max-w-[1000px] mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl md:text-2xl font-bold text-slate-900">Deals</h1>
+          <p className="text-sm text-slate-500 mt-0.5">
+            {greatCount > 0 && <span className="text-emerald-600 font-medium">{greatCount} great</span>}
+            {greatCount > 0 && fairCount > 0 && <span className="text-slate-400"> · </span>}
+            {fairCount > 0 && <span className="text-amber-600 font-medium">{fairCount} fair</span>}
+            {(greatCount > 0 || fairCount > 0) && <span className="text-slate-400"> · </span>}
+            <span>{deals.length} total</span>
+          </p>
+        </div>
       </div>
 
       {/* Controls */}
       <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 items-stretch sm:items-center">
+        {/* Filter tabs */}
         <div className="flex rounded-lg border border-gray-200 overflow-hidden bg-white">
           {FILTERS.map(({ label, value }) => (
             <button
@@ -631,14 +672,35 @@ export default function DealsPage() {
             </button>
           ))}
         </div>
+
+        {/* Search */}
         <input
           className="text-sm border border-gray-200 rounded-lg px-3 py-2 w-full sm:w-64 focus:outline-none focus:ring-2 focus:ring-slate-300 bg-white"
           placeholder="Search make, model, title…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+
+        {/* Sort */}
+        <div className="flex gap-1 items-center ml-auto">
+          <span className="text-xs text-slate-400 mr-1 hidden sm:inline">Sort:</span>
+          {SORT_OPTIONS.map(({ label, key }) => (
+            <button
+              key={key}
+              onClick={() => handleSort(key)}
+              className={`px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                sortKey === key
+                  ? "bg-slate-900 text-white"
+                  : "bg-white border border-gray-200 text-slate-600 hover:bg-gray-50"
+              }`}
+            >
+              {label}{sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+            </button>
+          ))}
+        </div>
       </div>
 
+      {/* Cards */}
       {loading ? (
         <div className="p-12 text-center text-slate-400 text-sm">Loading…</div>
       ) : visible.length === 0 ? (
@@ -648,107 +710,17 @@ export default function DealsPage() {
             : "No deals found. Run the pipeline from the Dashboard."}
         </div>
       ) : (
-        <>
-          {/* Mobile cards */}
-          <div className="md:hidden space-y-3">
-            {visible.map((d) => (
-              <DealCard
-                key={d.listing_id}
-                d={d}
-                onClick={() => setSelected(d)}
-                isSaved={favoriteIds.has(d.listing_id)}
-                onToggle={toggleFavorite}
-              />
-            ))}
-          </div>
-
-          {/* Desktop table */}
-          <div className="hidden md:block bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 text-left text-xs text-slate-500 uppercase tracking-wide">
-                  <SortHeader label="Score"      sortKey="total_score"     current={sortKey} dir={sortDir} onClick={handleSort} />
-                  <SortHeader label="Vehicle"    sortKey="title"           current={sortKey} dir={sortDir} onClick={handleSort} />
-                  <SortHeader label="Asking"     sortKey="asking_price"    current={sortKey} dir={sortDir} onClick={handleSort} />
-                  <SortHeader label="Est. Profit" sortKey="profit_estimate" current={sortKey} dir={sortDir} onClick={handleSort} />
-                  <th className="px-4 py-3 font-medium">Carvana</th>
-                  <th className="px-4 py-3 font-medium">CarMax</th>
-                  <th className="px-4 py-3 font-medium">Local Mkt</th>
-                  <SortHeader label="Mileage"    sortKey="mileage"         current={sortKey} dir={sortDir} onClick={handleSort} />
-                  <th className="px-4 py-3 font-medium">Title</th>
-                  <th className="px-4 py-3 font-medium">Posted</th>
-                  <th className="px-4 py-3 font-medium">Source</th>
-                  <th className="px-4 py-3 w-10"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {visible.map((d) => {
-                  const reference = d.blended_market_value ?? d.kbb_value;
-                  const savings = d.savings ?? (reference ? reference - d.asking_price : null);
-                  return (
-                    <tr key={d.listing_id} className="hover:bg-gray-50 cursor-pointer transition-colors" onClick={() => setSelected(d)}>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${CLASS_BADGE[d.deal_class]}`}>
-                          {CLASS_ICON[d.deal_class]} {d.total_score}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 max-w-[220px]">
-                        <div className="font-medium text-slate-900 truncate">{d.title}</div>
-                        <div className="text-xs text-slate-400">{d.year} · {d.make} {d.model}</div>
-                      </td>
-                      <td className="px-4 py-3 font-medium text-slate-900">{fmt(d.asking_price)}</td>
-                      <td className="px-4 py-3">
-                        {d.profit_estimate == null ? (
-                          <span className="text-slate-300">—</span>
-                        ) : d.profit_estimate > 0 ? (
-                          <div>
-                            <span className="text-emerald-600 font-bold">{fmt(d.profit_estimate)}</span>
-                            {d.profit_margin_pct != null && (
-                              <span className="text-emerald-500 text-xs ml-1">{(d.profit_margin_pct * 100).toFixed(0)}%</span>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-red-500 font-medium">{fmt(d.profit_estimate)}</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        {d.make && d.model ? (
-                          <a href={carvanaUrl(d)} target="_blank" rel="noopener noreferrer"
-                            className="group inline-flex items-center gap-1.5 text-[#00aed9] font-medium hover:underline">
-                            {fmt(d.carvana_value)}
-                            <span className="text-xs opacity-60 group-hover:opacity-100">↗</span>
-                          </a>
-                        ) : <span className="text-slate-400">—</span>}
-                      </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        {d.make && d.model ? (
-                          <a href={carmaxUrl(d)} target="_blank" rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#e31837]/10 text-[#e31837] text-xs font-semibold hover:bg-[#e31837]/20">
-                            Search ↗
-                          </a>
-                        ) : <span className="text-slate-400">—</span>}
-                      </td>
-                      <td className="px-4 py-3 text-slate-500">{fmt(d.local_market_value)}</td>
-                      <td className="px-4 py-3 text-slate-500">{fmtMi(d.mileage)}</td>
-                      <td className="px-4 py-3"><TitleBadge status={d.title_status} /></td>
-                      <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">{timeAgo(d.posted_date)}</td>
-                      <td className="px-4 py-3">
-                        <span className="inline-block px-2 py-0.5 bg-slate-100 text-slate-600 text-xs rounded">{d.source}</span>
-                      </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <StarButton
-                          listingId={d.listing_id}
-                          isSaved={favoriteIds.has(d.listing_id)}
-                          onToggle={toggleFavorite}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
+        <div className="space-y-3">
+          {visible.map((d) => (
+            <SignalCard
+              key={d.listing_id}
+              d={d}
+              onClick={() => setSelected(d)}
+              isSaved={favoriteIds.has(d.listing_id)}
+              onToggle={toggleFavorite}
+            />
+          ))}
+        </div>
       )}
 
       {selected && <DealDrawer deal={selected} onClose={() => setSelected(null)} />}

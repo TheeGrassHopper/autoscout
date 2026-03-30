@@ -41,11 +41,120 @@ function fmtMi(n?: number | null) {
 
 // ── Stat Card ─────────────────────────────────────────────────────────────────
 
-function StatCard({ label, value, accent }: { label: string; value: number; accent: string }) {
-  return (
-    <div className={`bg-white rounded-xl border-l-4 ${accent} shadow-sm p-4`}>
+function StatCard({
+  label,
+  value,
+  accent,
+  href,
+}: {
+  label: string;
+  value: number;
+  accent: string;
+  href?: string;
+}) {
+  const inner = (
+    <div className={`bg-white rounded-xl border-l-4 ${accent} shadow-sm p-4 h-full transition-shadow hover:shadow-md`}>
       <div className="text-2xl md:text-3xl font-bold text-slate-900">{value}</div>
       <div className="text-xs text-slate-500 mt-1">{label}</div>
+    </div>
+  );
+  if (href) {
+    return <Link href={href} className="block h-full">{inner}</Link>;
+  }
+  return inner;
+}
+
+// ── Top Deal Spotlight ────────────────────────────────────────────────────────
+
+function TopDealSpotlight({ deal }: { deal: Deal | null }) {
+  if (!deal) {
+    return (
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8 flex flex-col items-center justify-center text-center h-full min-h-[260px]">
+        <div className="text-4xl mb-3">🔍</div>
+        <div className="text-slate-600 font-medium">No great deals yet</div>
+        <div className="text-slate-400 text-sm mt-1">
+          Run the pipeline to start scanning for deals.
+        </div>
+      </div>
+    );
+  }
+
+  const belowMarketPct =
+    deal.blended_market_value != null && deal.asking_price != null
+      ? Math.round((1 - deal.asking_price / deal.blended_market_value) * 100)
+      : null;
+
+  const imageUrl = deal.image_urls && deal.image_urls.length > 0 ? deal.image_urls[0] : null;
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-full">
+      <div className="px-4 md:px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+        <h2 className="text-base font-semibold text-slate-900">Top Deal Spotlight</h2>
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${SCORE_COLOR[deal.deal_class]}`}>
+          {SCORE_ICON[deal.deal_class]} Score {deal.total_score}
+        </span>
+      </div>
+
+      {imageUrl && (
+        <div className="w-full h-44 overflow-hidden bg-slate-100">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imageUrl}
+            alt={deal.title}
+            className="w-full h-full object-cover"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+          />
+        </div>
+      )}
+
+      <div className="px-4 md:px-6 py-4 flex-1 space-y-2">
+        <a
+          href={deal.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-semibold text-slate-900 hover:text-blue-600 leading-snug block line-clamp-2"
+        >
+          {deal.title}
+        </a>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-xl font-bold text-slate-900">{fmt(deal.asking_price)}</span>
+          {belowMarketPct != null && belowMarketPct > 0 ? (
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-700 border border-emerald-200">
+              {belowMarketPct}% below market
+            </span>
+          ) : deal.profit_estimate != null ? (
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border ${
+              deal.profit_estimate > 0
+                ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+                : "bg-red-100 text-red-700 border-red-200"
+            }`}>
+              {deal.profit_estimate > 0 ? "+" : ""}{fmt(deal.profit_estimate)} profit
+            </span>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap gap-3 text-xs text-slate-500">
+          {deal.year && <span>{deal.year}</span>}
+          {deal.mileage != null && <span>{fmtMi(deal.mileage)}</span>}
+          {deal.location && <span>{deal.location}</span>}
+        </div>
+      </div>
+
+      <div className="px-4 md:px-6 pb-4 flex gap-2">
+        <Link
+          href="/deals"
+          className="flex-1 text-center px-4 py-2 text-sm bg-slate-900 text-white font-medium rounded-lg hover:bg-slate-700 transition-colors"
+        >
+          View Deal →
+        </Link>
+        <Link
+          href="/messages"
+          className="flex-1 text-center px-4 py-2 text-sm border border-gray-200 text-slate-600 font-medium rounded-lg hover:bg-gray-50 transition-colors"
+        >
+          Draft Message
+        </Link>
+      </div>
     </div>
   );
 }
@@ -122,14 +231,14 @@ function PipelinePanel() {
   const clearDb = async () => {
     if (!confirm("Delete all listings and messages from the database? This cannot be undone.")) return;
     await resetDatabase();
-    setLogs([`🗑️ Database cleared`]);
+    setLogs([`Database cleared`]);
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 md:p-6">
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 md:p-6 flex flex-col h-full">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-base font-semibold text-slate-900">Run Pipeline</h2>
+          <h2 className="text-base font-semibold text-slate-900">Pipeline Control</h2>
           <p className="text-xs text-slate-400 mt-0.5">
             {status.last_run
               ? `Last run: ${new Date(status.last_run).toLocaleString()} — ${status.last_count} listings`
@@ -149,7 +258,7 @@ function PipelinePanel() {
         </div>
       </div>
 
-      <div className="space-y-3 mb-4">
+      <div className="space-y-3 mb-4 flex-1">
         {/* Search query */}
         <input
           className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-slate-300"
@@ -159,7 +268,7 @@ function PipelinePanel() {
           disabled={status.running}
         />
 
-        {/* ZIP + Radius + controls row */}
+        {/* ZIP + Radius row */}
         <div className="flex flex-wrap gap-2 items-center">
           <div className="flex items-center gap-2">
             <label className="text-xs text-slate-500 whitespace-nowrap">From ZIP</label>
@@ -185,7 +294,6 @@ function PipelinePanel() {
               max={500}
             />
           </div>
-
         </div>
 
         {/* Filters row */}
@@ -279,21 +387,25 @@ function PipelinePanel() {
         </div>
       )}
 
-      {logs.length > 0 && (
+      {(status.running || logs.length > 0) && (
         <div
           ref={logsRef}
-          className="bg-slate-950 text-green-400 text-xs font-mono rounded-lg p-4 h-40 md:h-48 overflow-y-auto space-y-0.5"
+          className="bg-slate-950 text-green-400 text-xs font-mono rounded-lg p-4 h-40 md:h-48 overflow-y-auto space-y-0.5 mt-4"
         >
-          {logs.map((l, i) => <div key={i}>{l}</div>)}
+          {logs.length === 0 ? (
+            <div className="text-slate-500">Waiting for output…</div>
+          ) : (
+            logs.map((l, i) => <div key={i}>{l}</div>)
+          )}
         </div>
       )}
     </div>
   );
 }
 
-// ── Top Deals ─────────────────────────────────────────────────────────────────
+// ── Top 5 Deals Table ─────────────────────────────────────────────────────────
 
-function TopDeals({ deals }: { deals: Deal[] }) {
+function TopDealsTable({ deals }: { deals: Deal[] }) {
   if (!deals.length) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8 text-center text-slate-400 text-sm">
@@ -313,29 +425,39 @@ function TopDeals({ deals }: { deals: Deal[] }) {
 
       {/* Mobile cards */}
       <div className="md:hidden divide-y divide-gray-100">
-        {deals.slice(0, 6).map((d) => (
-          <div key={d.listing_id} className="p-4 space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${SCORE_COLOR[d.deal_class]}`}>
-                {SCORE_ICON[d.deal_class]} {d.total_score}
-              </span>
-              <span className="text-xs text-slate-400">{d.source}</span>
-            </div>
-            <a href={d.url} target="_blank" rel="noopener noreferrer"
-              className="font-semibold text-slate-900 hover:text-blue-600 block leading-snug">
-              {d.title}
-            </a>
-            <div className="flex items-center gap-3 text-sm">
-              <span className="font-medium text-slate-900">{fmt(d.asking_price)}</span>
-              {d.profit_estimate != null && (
-                <span className={`font-bold text-xs ${d.profit_estimate > 0 ? "text-emerald-600" : "text-red-500"}`}>
-                  {d.profit_estimate > 0 ? "+" : ""}{fmt(d.profit_estimate)} profit
+        {deals.slice(0, 5).map((d) => {
+          const belowPct =
+            d.blended_market_value != null && d.asking_price != null
+              ? Math.round((1 - d.asking_price / d.blended_market_value) * 100)
+              : null;
+          return (
+            <div key={d.listing_id} className="p-4 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${SCORE_COLOR[d.deal_class]}`}>
+                  {SCORE_ICON[d.deal_class]} {d.total_score}
                 </span>
-              )}
-              <span className="text-slate-400 text-xs">{fmtMi(d.mileage)}</span>
+                <span className="text-xs text-slate-400">{d.source}</span>
+              </div>
+              <a href={d.url} target="_blank" rel="noopener noreferrer"
+                className="font-semibold text-slate-900 hover:text-blue-600 block leading-snug">
+                {d.title}
+              </a>
+              <div className="flex items-center gap-3 text-sm">
+                <span className="font-medium text-slate-900">{fmt(d.asking_price)}</span>
+                {belowPct != null ? (
+                  <span className={`font-bold text-xs ${belowPct > 0 ? "text-emerald-600" : "text-red-500"}`}>
+                    {belowPct > 0 ? `${belowPct}% below market` : `${Math.abs(belowPct)}% above market`}
+                  </span>
+                ) : d.profit_estimate != null ? (
+                  <span className={`font-bold text-xs ${d.profit_estimate > 0 ? "text-emerald-600" : "text-red-500"}`}>
+                    {d.profit_estimate > 0 ? "+" : ""}{fmt(d.profit_estimate)} profit
+                  </span>
+                ) : null}
+                <span className="text-slate-400 text-xs">{fmtMi(d.mileage)}</span>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Desktop table */}
@@ -345,44 +467,48 @@ function TopDeals({ deals }: { deals: Deal[] }) {
             <th className="px-6 py-3 font-medium">Score</th>
             <th className="px-6 py-3 font-medium">Vehicle</th>
             <th className="px-6 py-3 font-medium">Asking</th>
-            <th className="px-6 py-3 font-medium">Carvana</th>
-            <th className="px-6 py-3 font-medium">Est. Profit</th>
+            <th className="px-6 py-3 font-medium">Below Market</th>
             <th className="px-6 py-3 font-medium">Mileage</th>
-            <th className="px-6 py-3 font-medium">Source</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">
-          {deals.slice(0, 8).map((d) => (
-            <tr key={d.listing_id} className="hover:bg-gray-50 transition-colors">
-              <td className="px-6 py-3">
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${SCORE_COLOR[d.deal_class]}`}>
-                  {SCORE_ICON[d.deal_class]} {d.total_score}
-                </span>
-              </td>
-              <td className="px-6 py-3">
-                <a href={d.url} target="_blank" rel="noopener noreferrer"
-                  className="font-medium text-slate-900 hover:text-blue-600 line-clamp-1 block max-w-xs">
-                  {d.title}
-                </a>
-                <div className="text-xs text-slate-400">{d.location}</div>
-              </td>
-              <td className="px-6 py-3 font-medium text-slate-900">{fmt(d.asking_price)}</td>
-              <td className="px-6 py-3 text-slate-500">{fmt(d.carvana_value)}</td>
-              <td className="px-6 py-3">
-                {d.profit_estimate == null ? "—" : d.profit_estimate > 0 ? (
-                  <span className="text-emerald-600 font-bold">{fmt(d.profit_estimate)}</span>
-                ) : (
-                  <span className="text-red-500">{fmt(d.profit_estimate)}</span>
-                )}
-              </td>
-              <td className="px-6 py-3 text-slate-500">{fmtMi(d.mileage)}</td>
-              <td className="px-6 py-3">
-                <span className="inline-block px-2 py-0.5 bg-slate-100 text-slate-600 text-xs rounded">
-                  {d.source}
-                </span>
-              </td>
-            </tr>
-          ))}
+          {deals.slice(0, 5).map((d) => {
+            const belowPct =
+              d.blended_market_value != null && d.asking_price != null
+                ? Math.round((1 - d.asking_price / d.blended_market_value) * 100)
+                : null;
+            return (
+              <tr key={d.listing_id} className="hover:bg-gray-50 transition-colors">
+                <td className="px-6 py-3">
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${SCORE_COLOR[d.deal_class]}`}>
+                    {SCORE_ICON[d.deal_class]} {d.total_score}
+                  </span>
+                </td>
+                <td className="px-6 py-3">
+                  <a href={d.url} target="_blank" rel="noopener noreferrer"
+                    className="font-medium text-slate-900 hover:text-blue-600 line-clamp-1 block max-w-xs">
+                    {d.title}
+                  </a>
+                  <div className="text-xs text-slate-400">{d.location}</div>
+                </td>
+                <td className="px-6 py-3 font-medium text-slate-900">{fmt(d.asking_price)}</td>
+                <td className="px-6 py-3">
+                  {belowPct != null ? (
+                    <span className={`font-bold ${belowPct > 0 ? "text-emerald-600" : "text-red-500"}`}>
+                      {belowPct > 0 ? `${belowPct}% below` : `${Math.abs(belowPct)}% above`}
+                    </span>
+                  ) : d.profit_estimate != null ? (
+                    <span className={`font-bold ${d.profit_estimate > 0 ? "text-emerald-600" : "text-red-500"}`}>
+                      {d.profit_estimate > 0 ? "+" : ""}{fmt(d.profit_estimate)}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )}
+                </td>
+                <td className="px-6 py-3 text-slate-500">{fmtMi(d.mileage)}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -408,24 +534,50 @@ export default function DashboardPage() {
     return () => clearInterval(id);
   }, []);
 
+  const topDeal = deals.length > 0 ? deals[0] : null;
+
   return (
     <div className="p-4 md:p-8 space-y-4 md:space-y-6 max-w-7xl mx-auto">
       <div>
-        <h1 className="text-xl md:text-2xl font-bold text-slate-900">Dashboard</h1>
-        <p className="text-sm text-slate-500 mt-1">Vehicle deal overview</p>
+        <h1 className="text-xl md:text-2xl font-bold text-slate-900">Command Center</h1>
+        <p className="text-sm text-slate-500 mt-1">AutoScout AI — vehicle deal overview</p>
       </div>
 
-      {/* Stats — 2 cols on mobile, 5 on desktop */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 md:gap-4">
-        <StatCard label="Total Scanned" value={stats?.total_listings ?? 0} accent="border-slate-300" />
-        <StatCard label="🔥 Great Deals" value={stats?.great_deals ?? 0} accent="border-emerald-500" />
-        <StatCard label="⚡ Fair Deals" value={stats?.fair_deals ?? 0} accent="border-amber-400" />
-        <StatCard label="❌ Overpriced" value={stats?.poor_deals ?? 0} accent="border-red-400" />
-        <StatCard label="💬 Queued" value={stats?.messages_queued ?? 0} accent="border-blue-400" />
+      {/* Stat cards — 2 cols on mobile, 4 on desktop */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+        <StatCard
+          label="🔥 Great Deals"
+          value={stats?.great_deals ?? 0}
+          accent="border-emerald-500"
+          href="/deals"
+        />
+        <StatCard
+          label="⚡ Fair Deals"
+          value={stats?.fair_deals ?? 0}
+          accent="border-amber-400"
+          href="/deals"
+        />
+        <StatCard
+          label="Total Scanned"
+          value={stats?.total_listings ?? 0}
+          accent="border-slate-300"
+        />
+        <StatCard
+          label="💬 Queued Messages"
+          value={stats?.messages_queued ?? 0}
+          accent="border-blue-400"
+          href="/messages"
+        />
       </div>
 
-      <PipelinePanel />
-      <TopDeals deals={deals} />
+      {/* 2-column grid: Spotlight + Pipeline */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-stretch">
+        <TopDealSpotlight deal={topDeal} />
+        <PipelinePanel />
+      </div>
+
+      {/* Top 5 deals table */}
+      <TopDealsTable deals={deals} />
     </div>
   );
 }

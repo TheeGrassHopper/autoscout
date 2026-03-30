@@ -4,21 +4,30 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { type AuthUser, clearAuth, getUser } from "@/lib/auth";
+import { type Stats, type PipelineStatus, getStats, getPipelineStatus } from "@/lib/api";
 
 const baseNav = [
-  { href: "/", label: "Dashboard", icon: "⚡" },
-  { href: "/deals", label: "Deals", icon: "🔍" },
-  { href: "/searches", label: "Searches", icon: "🔖" },
-  { href: "/messages", label: "Messages", icon: "💬" },
-  { href: "/profile", label: "Profile", icon: "👤" },
+  { href: "/",         label: "Dashboard", icon: "🏠" },
+  { href: "/deals",    label: "Deals",     icon: "🔥" },
+  { href: "/market",   label: "Market",    icon: "📊" },
+  { href: "/searches", label: "Searches",  icon: "🔍" },
+  { href: "/messages", label: "Outreach",  icon: "✉️" },
+  { href: "/profile",  label: "Profile",   icon: "👤" },
 ];
+
+function minutesAgo(isoString: string): number {
+  return Math.floor((Date.now() - new Date(isoString).getTime()) / 60_000);
+}
 
 export default function Sidebar() {
   const path = usePathname();
   const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [nav, setNav] = useState(baseNav);
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [pipeline, setPipeline] = useState<PipelineStatus | null>(null);
 
+  // Load user once
   useEffect(() => {
     const u = getUser();
     setUser(u);
@@ -27,10 +36,69 @@ export default function Sidebar() {
     }
   }, []);
 
+  // Poll stats + pipeline status every 10 seconds
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchData() {
+      try {
+        const [s, p] = await Promise.all([getStats(), getPipelineStatus()]);
+        if (!cancelled) {
+          setStats(s);
+          setPipeline(p);
+        }
+      } catch {
+        // silently ignore network errors during polling
+      }
+    }
+
+    fetchData();
+    const id = setInterval(fetchData, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
   const logout = () => {
     clearAuth();
     router.push("/login");
   };
+
+  // Pipeline status label + dot color
+  function PipelineDot() {
+    if (!pipeline) return null;
+
+    if (pipeline.running) {
+      return (
+        <div className="flex items-center gap-2 px-4 pb-3">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+          </span>
+          <span className="text-xs text-blue-400">Pipeline running</span>
+        </div>
+      );
+    }
+
+    if (pipeline.last_run) {
+      const mins = minutesAgo(pipeline.last_run);
+      const label = mins < 1 ? "just now" : mins === 1 ? "1 min ago" : `${mins} min ago`;
+      return (
+        <div className="flex items-center gap-2 px-4 pb-3">
+          <span className="inline-flex rounded-full h-2 w-2 bg-slate-500" />
+          <span className="text-xs text-slate-500">Last run {label}</span>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex items-center gap-2 px-4 pb-3">
+        <span className="inline-flex rounded-full h-2 w-2 bg-slate-600" />
+        <span className="text-xs text-slate-500">Never run</span>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -44,6 +112,12 @@ export default function Sidebar() {
         <nav className="flex-1 px-3 py-4 space-y-1">
           {nav.map(({ href, label, icon }) => {
             const active = path === href;
+
+            // Badge for Deals
+            const showDealsBadge = href === "/deals" && stats && stats.great_deals > 0;
+            // Badge for Outreach
+            const showOutreachBadge = href === "/messages" && stats && stats.messages_queued > 0;
+
             return (
               <Link
                 key={href}
@@ -55,11 +129,24 @@ export default function Sidebar() {
                 }`}
               >
                 <span className="text-base">{icon}</span>
-                {label}
+                <span className="flex-1">{label}</span>
+                {showDealsBadge && (
+                  <span className="ml-auto text-[10px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded-full">
+                    {stats!.great_deals}
+                  </span>
+                )}
+                {showOutreachBadge && (
+                  <span className="ml-auto text-[10px] font-bold bg-blue-500 text-white px-1.5 py-0.5 rounded-full">
+                    {stats!.messages_queued}
+                  </span>
+                )}
               </Link>
             );
           })}
         </nav>
+
+        {/* Pipeline status dot */}
+        <PipelineDot />
 
         <div className="px-4 py-4 border-t border-slate-700 space-y-2">
           {user && (
@@ -78,15 +165,31 @@ export default function Sidebar() {
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900 border-t border-slate-700 flex safe-bottom">
         {nav.map(({ href, label, icon }) => {
           const active = path === href;
+
+          const showDealsBadge = href === "/deals" && stats && stats.great_deals > 0;
+          const showOutreachBadge = href === "/messages" && stats && stats.messages_queued > 0;
+
           return (
             <Link
               key={href}
               href={href}
-              className={`flex-1 flex flex-col items-center justify-center py-3 gap-0.5 text-xs font-medium transition-colors ${
+              className={`flex-1 flex flex-col items-center justify-center py-3 gap-0.5 text-xs font-medium transition-colors relative ${
                 active ? "text-white" : "text-slate-400"
               }`}
             >
-              <span className="text-xl leading-none">{icon}</span>
+              <span className="relative text-xl leading-none">
+                {icon}
+                {showDealsBadge && (
+                  <span className="absolute -top-1 -right-2 text-[9px] font-bold bg-emerald-500 text-white min-w-[14px] h-[14px] flex items-center justify-center rounded-full px-0.5">
+                    {stats!.great_deals}
+                  </span>
+                )}
+                {showOutreachBadge && (
+                  <span className="absolute -top-1 -right-2 text-[9px] font-bold bg-blue-500 text-white min-w-[14px] h-[14px] flex items-center justify-center rounded-full px-0.5">
+                    {stats!.messages_queued}
+                  </span>
+                )}
+              </span>
               <span>{label}</span>
             </Link>
           );
