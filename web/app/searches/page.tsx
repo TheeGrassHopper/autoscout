@@ -288,9 +288,9 @@ function SearchCard({
 
   /** Trigger pipeline scrape for this query, poll until done, then show results */
   const scrape = async (c: SearchCriteria) => {
-    if (!user || scrapePhase === "scraping") return;
+    if (scrapePhase === "scraping") return;
     setScrapePhase("scraping");
-    setScrapeMsg("Starting scrape…");
+    setScrapeMsg("Starting…");
     setResults(null);
     setError(null);
     try {
@@ -314,29 +314,33 @@ function SearchCard({
     }
 
     // Poll pipeline status until it finishes
-    setScrapeMsg("Scraping listings…");
     const start = Date.now();
     const MAX_WAIT_MS = 5 * 60 * 1000; // 5 min timeout
     let finished = false;
     while (Date.now() - start < MAX_WAIT_MS) {
-      await new Promise((r) => setTimeout(r, 4000));
+      await new Promise((r) => setTimeout(r, 3000));
       try {
         const status = await getPipelineStatus();
-        if (!status.running) { finished = true; break; }
         const elapsed = Math.round((Date.now() - start) / 1000);
-        setScrapeMsg(`Scraping… ${elapsed}s`);
+        setScrapeMsg(`${elapsed}s elapsed…`);
+        if (!status.running) { finished = true; break; }
       } catch { /* ignore poll errors */ }
     }
 
     if (!finished) {
       setScrapePhase("error");
-      setError("Scrape timed out — try Run to see partial results");
+      setError("Scrape timed out after 5 min — check the Command Center for status");
       return;
     }
 
-    setScrapeMsg("Scrape complete — loading results…");
+    setScrapeMsg("Done — loading results…");
     setScrapePhase("done");
-    await search(c);
+    // Only load results if user is logged in (previewSearch requires userId)
+    if (user) {
+      await search(c);
+    } else {
+      setError("Scrape complete — log in to see filtered results, or check the Deals page");
+    }
   };
 
   const busy = searching || scrapePhase === "scraping";
@@ -410,11 +414,21 @@ function SearchCard({
                 onClick={(e) => { e.stopPropagation(); scrape(criteria); }}
                 disabled={busy}
                 title="Pull fresh listings from Craigslist right now — takes 1–2 min"
-                className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-40 transition-colors"
+                className={`px-3 py-1.5 text-white text-xs font-medium rounded-lg disabled:opacity-40 transition-colors min-w-[80px] ${
+                  scrapePhase === "scraping"
+                    ? "bg-amber-500 hover:bg-amber-600 animate-pulse"
+                    : scrapePhase === "done"
+                    ? "bg-emerald-500 hover:bg-emerald-600"
+                    : scrapePhase === "error"
+                    ? "bg-red-500 hover:bg-red-600"
+                    : "bg-emerald-600 hover:bg-emerald-700"
+                }`}
               >
-                {scrapePhase === "scraping" ? "Scraping…" : "⬇ Fresh"}
+                {scrapePhase === "scraping" ? scrapeMsg : scrapePhase === "done" ? "✓ Done" : scrapePhase === "error" ? "✗ Failed" : "⬇ Fresh"}
               </button>
-              <span className="text-[9px] text-slate-400 leading-none">live scrape</span>
+              <span className="text-[9px] text-slate-400 leading-none">
+                {scrapePhase === "scraping" ? "running…" : "live scrape"}
+              </span>
             </div>
 
             {onDelete && !editing && (
