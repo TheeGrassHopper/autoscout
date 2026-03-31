@@ -189,9 +189,10 @@ function PipelinePanel() {
       try { const s = await getPipelineStatus(); setStatus(s); } catch {}
     };
     refresh();
-    const id = setInterval(refresh, 3000);
+    // Poll fast (3s) when running, slow (30s) when idle to reduce server load
+    const id = setInterval(refresh, status.running ? 3000 : 30000);
     return () => clearInterval(id);
-  }, []);
+  }, [status.running]);
 
   useEffect(() => {
     if (!status.running) return;
@@ -533,7 +534,7 @@ export default function DashboardPage() {
       } catch {}
     };
     load();
-    const id = setInterval(load, 10000);
+    const id = setInterval(load, 60000); // 60s — stats don't change that fast
     return () => clearInterval(id);
   }, []);
 

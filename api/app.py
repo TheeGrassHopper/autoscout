@@ -120,6 +120,9 @@ FAV_DB_PATH = "output/favorites.db"
 # listing_id -> {"status": "running"|"completed"|"error", "offer": str|None, ...}
 _offer_jobs: dict = {}
 
+# ── Stats cache (avoid hammering DB on every 3s poll) ────────────────────────
+_stats_cache: dict = {"data": None, "expires": 0.0}
+
 # ── Pipeline state (per-user) ─────────────────────────────────────────────────
 # Keyed by user_key (str user_id from JWT, or "anon").
 # Each slot is independent — multiple users can run simultaneously.
@@ -249,26 +252,30 @@ _ensure_fav_schema()
 
 @app.get("/api/stats")
 def get_stats():
+    import time
+    now = time.monotonic()
+    if _stats_cache["data"] and now < _stats_cache["expires"]:
+        return _stats_cache["data"]
+
     if not _db_exists():
-        return {"total_listings": 0, "great_deals": 0, "fair_deals": 0,
-                "poor_deals": 0, "messages_queued": 0, "messages_approved": 0}
+        result = {"total_listings": 0, "great_deals": 0, "fair_deals": 0,
+                  "poor_deals": 0, "messages_queued": 0, "messages_approved": 0}
+    else:
+        with _db() as conn:
+            total    = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
+            great    = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='great'").fetchone()[0]
+            fair     = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='fair'").fetchone()[0]
+            poor     = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='poor'").fetchone()[0]
+            queued   = conn.execute("SELECT COUNT(*) FROM messages WHERE status='queued'").fetchone()[0]
+            approved = conn.execute("SELECT COUNT(*) FROM messages WHERE status='approved'").fetchone()[0]
+        result = {
+            "total_listings": total, "great_deals": great, "fair_deals": fair,
+            "poor_deals": poor, "messages_queued": queued, "messages_approved": approved,
+        }
 
-    with _db() as conn:
-        total   = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
-        great   = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='great'").fetchone()[0]
-        fair    = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='fair'").fetchone()[0]
-        poor    = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='poor'").fetchone()[0]
-        queued  = conn.execute("SELECT COUNT(*) FROM messages WHERE status='queued'").fetchone()[0]
-        approved = conn.execute("SELECT COUNT(*) FROM messages WHERE status='approved'").fetchone()[0]
-
-    return {
-        "total_listings": total,
-        "great_deals": great,
-        "fair_deals": fair,
-        "poor_deals": poor,
-        "messages_queued": queued,
-        "messages_approved": approved,
-    }
+    _stats_cache["data"] = result
+    _stats_cache["expires"] = now + 15.0  # cache for 15 seconds
+    return result
 
 
 # ── Deals ─────────────────────────────────────────────────────────────────────
