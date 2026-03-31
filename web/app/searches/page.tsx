@@ -391,25 +391,31 @@ function SearchCard({
 
           {/* Action buttons */}
           <div className="flex gap-2 flex-shrink-0 items-center">
-            {/* Run: filter existing DB */}
-            <button
-              onClick={(e) => { e.stopPropagation(); search(criteria); }}
-              disabled={busy}
-              title="Filter your current scraped listings"
-              className="px-3 py-1.5 bg-slate-900 text-white text-xs font-medium rounded-lg hover:bg-slate-700 disabled:opacity-40 transition-colors"
-            >
-              {searching ? "Searching…" : "▶ Run"}
-            </button>
+            {/* Cached run: filter existing DB */}
+            <div className="flex flex-col items-center gap-0.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); search(criteria); }}
+                disabled={busy}
+                title="Filter listings already in your database — instant, no new scraping"
+                className="px-3 py-1.5 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg hover:bg-slate-200 disabled:opacity-40 transition-colors border border-slate-200"
+              >
+                {searching ? "Searching…" : "▶ Cached"}
+              </button>
+              <span className="text-[9px] text-slate-400 leading-none">from DB</span>
+            </div>
 
-            {/* Scrape: trigger pipeline for this query */}
-            <button
-              onClick={(e) => { e.stopPropagation(); scrape(criteria); }}
-              disabled={busy}
-              title="Scrape fresh listings from Craigslist for this search"
-              className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-40 transition-colors"
-            >
-              {scrapePhase === "scraping" ? "Scraping…" : "⬇ Scrape"}
-            </button>
+            {/* Fresh scrape: trigger pipeline */}
+            <div className="flex flex-col items-center gap-0.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); scrape(criteria); }}
+                disabled={busy}
+                title="Pull fresh listings from Craigslist right now — takes 1–2 min"
+                className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-40 transition-colors"
+              >
+                {scrapePhase === "scraping" ? "Scraping…" : "⬇ Fresh"}
+              </button>
+              <span className="text-[9px] text-slate-400 leading-none">live scrape</span>
+            </div>
 
             {onDelete && !editing && (
               <button
