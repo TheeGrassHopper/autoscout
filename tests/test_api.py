@@ -380,23 +380,66 @@ def test_config_endpoint(client):
 
 # ── /api/database DELETE ─────────────────────────────────────────────────────
 
-def test_delete_database_clears_data(seeded_client):
-    res = seeded_client.delete("/api/database")
+def _make_admin_token(user_id: int = 999) -> str:
+    """Create a signed JWT for an admin user without hitting the DB."""
+    from api.routers.auth import make_token
+    return make_token(user_id, "admin@test.com")
+
+
+def test_delete_database_clears_data(seeded_client, monkeypatch):
+    import api.app as app_module
+    from utils.user_db import UserDB
+
+    # Patch UserDB.get_user_by_id to return an admin user for our test token
+    admin_id = 999
+    monkeypatch.setattr(
+        UserDB, "get_user_by_id",
+        lambda self, uid: {"id": admin_id, "email": "admin@test.com", "role": "admin"} if uid == admin_id else None,
+    )
+    token = _make_admin_token(admin_id)
+    res = seeded_client.delete("/api/database", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 200
 
     res2 = seeded_client.get("/api/stats")
     assert res2.json()["total_listings"] == 0
 
 
-def test_delete_database_blocked_while_running(client):
+def test_delete_database_blocked_while_running(client, monkeypatch):
     import api.app as app_module
-    slot = app_module._get_pipeline("anon")
+    from utils.user_db import UserDB
+
+    admin_id = 999
+    monkeypatch.setattr(
+        UserDB, "get_user_by_id",
+        lambda self, uid: {"id": admin_id, "email": "admin@test.com", "role": "admin"} if uid == admin_id else None,
+    )
+    token = _make_admin_token(admin_id)
+    slot = app_module._get_pipeline(str(admin_id))
     slot["running"] = True
     try:
-        res = client.delete("/api/database")
+        res = client.delete("/api/database", headers={"Authorization": f"Bearer {token}"})
         assert res.status_code == 409
     finally:
         slot["running"] = False
+
+
+def test_delete_database_forbidden_for_non_admin(client, monkeypatch):
+    from utils.user_db import UserDB
+
+    user_id = 42
+    monkeypatch.setattr(
+        UserDB, "get_user_by_id",
+        lambda self, uid: {"id": user_id, "email": "user@test.com", "role": "user"} if uid == user_id else None,
+    )
+    from api.routers.auth import make_token
+    token = make_token(user_id, "user@test.com")
+    res = client.delete("/api/database", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 403
+
+
+def test_delete_database_requires_auth(client):
+    res = client.delete("/api/database")
+    assert res.status_code == 401
 
 
 # ── API key middleware ────────────────────────────────────────────────────────

@@ -6,11 +6,13 @@ import {
   type Deal,
   type SavedSearch,
   type SearchCriteria,
+  type AdminSavedSearch,
   createSavedSearch,
   updateSavedSearch,
   deleteSavedSearch,
   deleteAllSavedSearches,
   getSavedSearches,
+  adminGetAllSearches,
   previewSearch,
   runPipeline,
   getPipelineStatus,
@@ -584,15 +586,20 @@ function NewSearchButton({ onCreated, existingNames }: { onCreated: () => void; 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function SearchesPage() {
-  const [searches, setSearches] = useState<SavedSearch[]>([]);
-  const [saving,   setSaving]   = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  const [searches,      setSearches]      = useState<SavedSearch[]>([]);
+  const [allSearches,   setAllSearches]   = useState<AdminSavedSearch[]>([]);
+  const [saving,        setSaving]        = useState<string | null>(null);
+  const [deleting,      setDeleting]      = useState(false);
 
   const user = getUser();
+  const isAdmin = user?.role === "admin";
 
   const load = async () => {
     if (!user) return;
     try { setSearches(await getSavedSearches(user.id)); } catch {}
+    if (isAdmin) {
+      try { setAllSearches(await adminGetAllSearches()); } catch {}
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -691,7 +698,6 @@ export default function SearchesPage() {
             return (
               <SearchCard
                 key={key}
-                
                 name={s.name}
                 criteria={s.criteria}
                 saving={saving === key}
@@ -703,6 +709,52 @@ export default function SearchesPage() {
           })
         )}
       </div>
+
+      {/* Admin: all users' searches */}
+      {isAdmin && (
+        <div className="space-y-2">
+          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+            All Users&rsquo; Searches
+            <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px] font-semibold">admin</span>
+          </h2>
+          {allSearches.length === 0 ? (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 text-center text-slate-400 text-sm">
+              No saved searches from any user yet.
+            </div>
+          ) : (
+            allSearches.map((s) => (
+              <div key={`admin-${s.id}`} className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-slate-900 text-sm">{s.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded truncate max-w-[180px]">
+                        {s.owner_email}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+                      {s.criteria.make && (
+                        <span className="text-xs text-slate-500">
+                          {s.criteria.make}{s.criteria.model ? ` ${s.criteria.model}` : ""}
+                        </span>
+                      )}
+                      {s.criteria.query && (
+                        <span className="text-xs text-slate-400">&ldquo;{s.criteria.query}&rdquo;</span>
+                      )}
+                      {s.criteria.max_price && (
+                        <span className="text-xs text-slate-500">≤ {fmt(s.criteria.max_price)}</span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-slate-300 flex-shrink-0 mt-1">
+                    {new Date(s.updated_at).toLocaleDateString()}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

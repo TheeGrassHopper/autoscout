@@ -814,15 +814,37 @@ def stream_logs(request: Request, token: str = ""):
 
 @app.delete("/api/database")
 def reset_database(request: Request):
-    p = _get_pipeline(_get_pipeline_key(request))
-    if p["running"]:
+    from api.routers.auth import decode_token
+    from utils.user_db import UserDB as _UserDB
+
+    # Require authentication
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(401, "Authentication required")
+    payload = decode_token(auth[7:])
+    if not payload:
+        raise HTTPException(401, "Invalid or expired token")
+    user = _UserDB().get_user_by_id(int(payload["sub"]))
+    if not user:
+        raise HTTPException(401, "User not found")
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin access required to clear the database")
+
+    # Check no pipeline is running for any user
+    with _pipelines_lock:
+        running_users = [k for k, p in _pipelines.items() if p["running"]]
+    if running_users:
         raise HTTPException(409, "Pipeline is running — stop it before clearing the database")
+
     if IS_PG:
         with _db_conn(DB_PATH) as conn:
-            conn.execute("DROP TABLE IF EXISTS messages")
-            conn.execute("DROP TABLE IF EXISTS listings")
+            conn.execute("DELETE FROM messages")
+            conn.execute("DELETE FROM listings")
+            conn.execute("DELETE FROM pricing_cache")
     elif os.path.exists(DB_PATH):
         os.remove(DB_PATH)
+    _stats_cache["data"] = None
+    _stats_cache["expires"] = 0.0
     return {"status": "cleared"}
 
 

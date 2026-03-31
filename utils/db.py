@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from datetime import datetime
+from typing import Optional
 
 from utils.pg import IS_PG, column_exists, db_conn
 
@@ -98,6 +99,23 @@ class Database:
             ]:
                 if not column_exists(conn, "listings", col):
                     conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
+
+        # Pricing cache table — survives scrape runs, keyed by vehicle+source
+        with self._connect() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pricing_cache (
+                    cache_key   TEXT NOT NULL,
+                    source      TEXT NOT NULL,
+                    value       INTEGER,
+                    kbb_value   INTEGER,
+                    cached_at   TEXT NOT NULL,
+                    expires_at  TEXT NOT NULL,
+                    PRIMARY KEY (cache_key, source)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pricing_cache_expires ON pricing_cache(expires_at)"
+            )
 
         logger.debug(f"Database ready: {self.db_path}")
 
@@ -192,3 +210,55 @@ class Database:
             fair  = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='fair'").fetchone()[0]
             sent  = conn.execute("SELECT COUNT(*) FROM messages WHERE status='sent'").fetchone()[0]
         return {"total_listings": total, "great_deals": great, "fair_deals": fair, "messages_sent": sent}
+
+    # ── Pricing Cache ─────────────────────────────────────────────────────────
+
+    _MILEAGE_BUCKET = 10_000   # round mileage to nearest 10k for cache key
+    _CACHE_TTL_DAYS = 7
+
+    @staticmethod
+    def _price_cache_key(make: str, model: str, year: int, mileage: int) -> str:
+        """Stable cache key: lower-cased make+model+year + mileage bucket."""
+        import hashlib
+        bucket = round(mileage / Database._MILEAGE_BUCKET) * Database._MILEAGE_BUCKET
+        raw = f"{make.lower()}|{model.lower()}|{year}|{bucket}"
+        return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+    def get_price_cache(self, make: str, model: str, year: int, mileage: int,
+                        source: str) -> Optional[tuple]:
+        """Return (value, kbb_value) from cache if still valid, else None."""
+        key = self._price_cache_key(make, model, year, mileage)
+        now = datetime.now().isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value, kbb_value FROM pricing_cache "
+                "WHERE cache_key=? AND source=? AND expires_at > ?",
+                (key, source, now),
+            ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def set_price_cache(self, make: str, model: str, year: int, mileage: int,
+                        source: str, value: Optional[int], kbb_value: Optional[int] = None):
+        """Upsert a pricing result into the cache with a 7-day TTL."""
+        from datetime import timedelta
+        key = self._price_cache_key(make, model, year, mileage)
+        now = datetime.now()
+        expires = (now + timedelta(days=self._CACHE_TTL_DAYS)).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO pricing_cache (cache_key, source, value, kbb_value, cached_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(cache_key, source) DO UPDATE SET
+                       value=excluded.value, kbb_value=excluded.kbb_value,
+                       cached_at=excluded.cached_at, expires_at=excluded.expires_at""",
+                (key, source, value, kbb_value, now.isoformat(), expires),
+            )
+
+    def purge_expired_price_cache(self):
+        """Delete expired cache rows — call occasionally to keep DB size down."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM pricing_cache WHERE expires_at <= ?",
+                (datetime.now().isoformat(),),
+            )
+        logger.debug(f"Purged {cur.rowcount} expired pricing cache rows")

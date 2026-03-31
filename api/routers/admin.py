@@ -71,6 +71,12 @@ def get_user_searches(user_id: int, admin: dict = Depends(admin_user)):
     return _user_db.get_searches(user_id)
 
 
+@router.get("/searches")
+def get_all_searches(admin: dict = Depends(admin_user)):
+    """Return all saved searches across all users, each annotated with owner email."""
+    return _user_db.get_all_searches_with_users()
+
+
 @router.get("/users/{user_id}/favorites")
 def get_user_favorites(user_id: int, admin: dict = Depends(admin_user)):
     return _user_db.get_favorites(user_id)

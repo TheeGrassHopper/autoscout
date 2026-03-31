@@ -438,6 +438,14 @@ export async function adminGetUserSearches(id: number): Promise<SavedSearch[]> {
   return res.json();
 }
 
+export type AdminSavedSearch = SavedSearch & { owner_email: string };
+
+export async function adminGetAllSearches(): Promise<AdminSavedSearch[]> {
+  const res = await fetch(`${BASE}/admin/searches`, { cache: "no-store", headers: userHeaders() });
+  if (!res.ok) throw new Error("Admin access required");
+  return res.json();
+}
+
 export async function adminGetUserFavorites(id: number): Promise<Deal[]> {
   const res = await fetch(`${BASE}/admin/users/${id}/favorites`, { cache: "no-store", headers: userHeaders() });
   return res.json();

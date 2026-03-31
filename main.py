@@ -27,6 +27,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from typing import Optional
 from dotenv import load_dotenv
 
 # ── Load environment variables ───────────────────────────────────────────────
@@ -226,55 +227,116 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
 
     def _fetch_prices(raw):
         """
-        D: Fetch all price sources for one listing in parallel threads.
+        Fetch all price sources for one listing.
+        Checks the pricing cache first per-source; only hits external APIs on miss.
         Returns (price_est, carvana_price, carmax_price, local_mkt_price).
         """
         mileage = raw.mileage or 50000
         has_vehicle = raw.make and raw.model and raw.year
 
-        price_est = None
+        # ── Cache helpers ─────────────────────────────────────────────────────
+        def _cached(source: str) -> Optional[tuple]:
+            if not has_vehicle:
+                return None
+            return db.get_price_cache(raw.make, raw.model, raw.year, mileage, source)
 
-        # Launch VinAudit + KBB/Apify + CarsXE + Carvana + CarMax concurrently
+        def _store(source: str, value, kbb_value=None):
+            if has_vehicle:
+                db.set_price_cache(raw.make, raw.model, raw.year, mileage, source,
+                                   value, kbb_value)
+
+        # ── Per-source cache checks ───────────────────────────────────────────
+        cached_carvana = _cached("carvana")
+        cached_carmax  = _cached("carmax")
+        cached_kbb     = _cached("kbb_apify")
+        cached_carsxe  = _cached("carsxe")
+
+        # ── Launch only uncached sources in parallel ───────────────────────────
         futures = {}
         with ThreadPoolExecutor(max_workers=5) as p:
             if use_vinaudit and raw.vin and raw.make and raw.model:
+                # VinAudit is VIN-specific — not worth caching by make/model/mileage
                 futures["vinaudit"] = p.submit(
                     get_vinaudit_price, vin=raw.vin, mileage=mileage,
                     make=raw.make, model=raw.model, year=raw.year or 0,
                 )
-            if use_kbb_apify and has_vehicle:
+            if use_kbb_apify and has_vehicle and cached_kbb is None:
                 futures["kbb_apify"] = p.submit(
                     get_kbb_apify_price, make=raw.make, model=raw.model,
                     year=raw.year, mileage=mileage,
                 )
-            if use_carsxe and has_vehicle:
+            if use_carsxe and has_vehicle and cached_carsxe is None:
                 futures["carsxe"] = p.submit(
                     get_carsxe_price, make=raw.make, model=raw.model,
                     year=raw.year, mileage=mileage, vin=raw.vin or "",
                 )
-            if use_carvana and has_vehicle:
+            if use_carvana and has_vehicle and cached_carvana is None:
                 futures["carvana"] = p.submit(
                     get_carvana_price, make=raw.make, model=raw.model,
                     year=raw.year, mileage=mileage,
                 )
-            if use_carmax and has_vehicle:
+            if use_carmax and has_vehicle and cached_carmax is None:
                 futures["carmax"] = p.submit(
                     get_carmax_price, make=raw.make, model=raw.model,
                     year=raw.year, mileage=mileage,
                 )
 
-        # Collect results
-        va_result      = futures["vinaudit"].result()  if "vinaudit"  in futures else None
-        kbb_result     = futures["kbb_apify"].result() if "kbb_apify" in futures else None
-        cx_result      = futures["carsxe"].result()    if "carsxe"    in futures else None
-        carvana_result = futures["carvana"].result()   if "carvana"   in futures else None
-        carmax_result  = futures["carmax"].result()    if "carmax"    in futures else None
+        # ── Collect + cache results ───────────────────────────────────────────
+        va_result  = futures["vinaudit"].result()  if "vinaudit"  in futures else None
+        kbb_result = futures["kbb_apify"].result() if "kbb_apify" in futures else None
+        cx_result  = futures["carsxe"].result()    if "carsxe"    in futures else None
 
-        carvana_price = carvana_kbb = carmax_price = None
+        carvana_result = futures["carvana"].result() if "carvana" in futures else None
+        carmax_result  = futures["carmax"].result()  if "carmax"  in futures else None
+
+        # Write fresh results to cache
+        if kbb_result and kbb_result.fair_market_value:
+            _store("kbb_apify", kbb_result.fair_market_value)
+        if cx_result and cx_result.fair_market_value:
+            _store("carsxe", cx_result.fair_market_value)
+        if carvana_result:
+            cv_price, cv_kbb = carvana_result
+            _store("carvana", cv_price, cv_kbb)
+        if carmax_result:
+            _store("carmax", carmax_result)
+
+        # ── Resolve carvana values (fresh or cached) ──────────────────────────
+        carvana_price = carvana_kbb = None
         if carvana_result:
             carvana_price, carvana_kbb = carvana_result
+        elif cached_carvana:
+            carvana_price, carvana_kbb = cached_carvana
+            if carvana_price:
+                logger.debug(f"  [cache hit] Carvana ${carvana_price:,} — {raw.title[:40]}")
 
-        # Priority: VinAudit (VIN, high) > KBB/Apify (real KBB, high) > CarsXE (medium)
+        carmax_price = None
+        if carmax_result:
+            carmax_price = carmax_result
+        elif cached_carmax:
+            carmax_price = cached_carmax[0]
+            if carmax_price:
+                logger.debug(f"  [cache hit] CarMax ${carmax_price:,} — {raw.title[:40]}")
+
+        # Resolve KBB (fresh or cached)
+        if kbb_result is None and cached_kbb:
+            from pricing.kbb import PriceEstimate as PE
+            kbb_result = PE(
+                source="kbb_apify_cached", make=raw.make, model=raw.model,
+                year=raw.year, mileage=mileage,
+                fair_market_value=cached_kbb[0], confidence="high",
+            )
+            logger.debug(f"  [cache hit] KBB ${cached_kbb[0]:,} — {raw.title[:40]}")
+
+        if cx_result is None and cached_carsxe:
+            from pricing.kbb import PriceEstimate as PE
+            cx_result = PE(
+                source="carsxe_cached", make=raw.make, model=raw.model,
+                year=raw.year, mileage=mileage,
+                fair_market_value=cached_carsxe[0], confidence="medium",
+            )
+
+        # ── Priority: VinAudit > KBB/Apify > CarsXE > Carvana KBB ───────────
+        price_est = None
         if va_result and va_result.fair_market_value:
             price_est = va_result
         elif kbb_result and kbb_result.fair_market_value:
@@ -288,9 +350,6 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
                 year=raw.year, mileage=mileage,
                 fair_market_value=carvana_kbb, confidence="high",
             )
-
-        if carmax_result:
-            carmax_price = carmax_result
 
         local_mkt_price = None
         if raw.make and raw.model:
@@ -410,6 +469,9 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
         f"Pipeline complete in {elapsed:.1f}s — "
         f"{stats['great_deals']} great / {stats['fair_deals']} fair deals in DB"
     )
+
+    # Purge expired pricing cache rows (lightweight, run at end of each pipeline)
+    db.purge_expired_price_cache()
 
     return scored_listings
 

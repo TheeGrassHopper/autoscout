@@ -14,7 +14,7 @@ import {
   runPipeline,
   stopPipeline,
 } from "@/lib/api";
-import { getToken } from "@/lib/auth";
+import { getToken, getUser } from "@/lib/auth";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -163,6 +163,8 @@ function TopDealSpotlight({ deal }: { deal: Deal | null }) {
 // ── Pipeline Panel ────────────────────────────────────────────────────────────
 
 function PipelinePanel() {
+  const user = getUser();
+  const isAdmin = user?.role === "admin";
   const [status, setStatus] = useState<PipelineStatus>({
     running: false,
     last_run: null,
@@ -358,14 +360,16 @@ function PipelinePanel() {
             />
             Dry run
           </label>
-          <button
-            onClick={clearDb}
-            disabled={status.running}
-            className="px-3 py-2.5 bg-red-50 text-red-600 text-sm font-medium rounded-lg hover:bg-red-100 disabled:opacity-40 transition-colors border border-red-200"
-            title="Clear database"
-          >
-            🗑️
-          </button>
+          {isAdmin && (
+            <button
+              onClick={clearDb}
+              disabled={status.running}
+              className="px-3 py-2.5 bg-red-50 text-red-600 text-sm font-medium rounded-lg hover:bg-red-100 disabled:opacity-40 transition-colors border border-red-200"
+              title="Clear database (admin only)"
+            >
+              🗑️
+            </button>
+          )}
           {status.running && (
             <button
               onClick={stopPipeline}

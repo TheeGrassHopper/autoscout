@@ -242,6 +242,22 @@ class UserDB:
             )
             return cur.rowcount
 
+    def get_all_searches_with_users(self) -> list[dict]:
+        """Admin view: all saved searches annotated with the owner's email."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT ss.*, u.email AS owner_email
+                   FROM saved_searches ss
+                   JOIN users u ON u.id = ss.user_id
+                   ORDER BY ss.updated_at DESC"""
+            ).fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                d["criteria"] = json.loads(d["criteria"])
+                result.append(d)
+            return result
+
     def _fetch_search(self, conn, search_id: int) -> Optional[dict]:
         row = conn.execute(
             "SELECT * FROM saved_searches WHERE id = ?", (search_id,)
