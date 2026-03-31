@@ -637,6 +637,51 @@ def skip_message(message_id: int):
     return {"status": "skipped"}
 
 
+@app.post("/api/deals/{listing_id}/draft-message")
+def draft_message_for_deal(listing_id: str):
+    """Generate (or re-generate) an outreach message for a listing and save it as queued."""
+    if not _db_exists():
+        raise HTTPException(404, "No database yet")
+
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT * FROM listings WHERE listing_id=?", (listing_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Listing not found")
+
+    listing = dict(row)
+
+    # Build a minimal object the drafter can work with
+    class _L:
+        pass
+
+    l = _L()
+    for field in ("title", "make", "model", "year", "mileage", "asking_price",
+                  "kbb_value", "savings", "total_score", "deal_class", "suggested_offer"):
+        setattr(l, field, listing.get(field))
+    # suggested_offer may not be stored — derive it if missing
+    if not l.suggested_offer and l.asking_price:
+        offer_pct = 1.0 - SCORING.get("offer_pct_below_asking", 0.08)
+        l.suggested_offer = int(l.asking_price * offer_pct)
+    l.savings_vs_kbb = listing.get("savings")
+
+    from messaging.drafter import MessageDrafter
+    use_claude = bool(MESSAGING.get("use_claude", False))
+    drafter = MessageDrafter(use_claude=use_claude)
+    text = drafter.draft(l)
+
+    now = datetime.now().isoformat()
+    with _db() as conn:
+        cursor = conn.execute(
+            "INSERT INTO messages (listing_id, message_text, drafted_at, status) VALUES (?,?,?,?)",
+            (listing_id, text, now, "queued"),
+        )
+        msg_id = cursor.lastrowid
+
+    return {"id": msg_id, "message_text": text, "status": "queued"}
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/pipeline/status")

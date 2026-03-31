@@ -34,6 +34,7 @@ export interface Deal {
   vin: string | null;
   title_status: string | null;
   seller_phone: string | null;
+  suggested_offer: number | null;
   posted_date: string | null;
   first_seen: string;
   last_seen: string;
@@ -104,6 +105,21 @@ export async function approveMessage(id: number): Promise<void> {
 
 export async function skipMessage(id: number): Promise<void> {
   await fetch(`${BASE}/api/messages/${id}/skip`, { method: "POST", headers: authHeaders() });
+}
+
+export interface DraftedMessage {
+  id: number;
+  message_text: string;
+  status: string;
+}
+
+export async function draftMessage(listingId: string): Promise<DraftedMessage> {
+  const res = await fetch(`${BASE}/api/deals/${listingId}/draft-message`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to generate message");
+  return res.json();
 }
 
 export async function getPipelineStatus(): Promise<PipelineStatus> {
