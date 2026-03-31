@@ -63,6 +63,7 @@ class Database:
                     carvana_offer_margin {_REAL},
                     local_market_comp_urls TEXT,
                     seller_phone        TEXT,
+                    seller_email        TEXT,
                     suggested_offer     INTEGER
                 )
             """)
@@ -101,6 +102,7 @@ class Database:
                 ("carvana_offer_margin",    _REAL),
                 ("local_market_comp_urls",  "TEXT"),
                 ("seller_phone",            "TEXT"),
+                ("seller_email",            "TEXT"),
                 ("suggested_offer",         "INTEGER"),
             ]:
                 if not column_exists(conn, "listings", col):
@@ -139,8 +141,8 @@ class Database:
                      savings, total_score, deal_class, make, model, year, mileage,
                      location, vin, title_status, posted_date, image_urls,
                      carvana_offer, carvana_offer_margin, local_market_comp_urls,
-                     seller_phone, suggested_offer, first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     seller_phone, seller_email, suggested_offer, first_seen, last_seen)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(listing_id) DO UPDATE SET
                     kbb_value=excluded.kbb_value,
                     carvana_value=excluded.carvana_value,
@@ -157,6 +159,7 @@ class Database:
                     carvana_offer=excluded.carvana_offer,
                     carvana_offer_margin=excluded.carvana_offer_margin,
                     seller_phone=excluded.seller_phone,
+                    seller_email=excluded.seller_email,
                     suggested_offer=excluded.suggested_offer,
                     last_seen=excluded.last_seen
             """, (
@@ -188,6 +191,7 @@ class Database:
                 scored_listing.carvana_offer_margin,
                 comp_urls_json,
                 getattr(scored_listing, "seller_phone", "") or None,
+                getattr(scored_listing, "seller_email", "") or None,
                 getattr(scored_listing, "suggested_offer", None),
                 now, now,
             ))

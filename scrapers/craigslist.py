@@ -42,6 +42,8 @@ _PHONE_RE = re.compile(
     r'(?!\d)'
 )
 
+_EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
+
 
 def _extract_phone(text: str) -> str:
     """Extract the first US phone number from free text. Returns digits-only string or ''."""
@@ -62,6 +64,15 @@ def _format_phone(digits: str) -> str:
     if len(digits) == 10:
         return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
     return digits
+
+
+def _extract_email(text: str) -> str:
+    """Extract the first email address from free text, or ''."""
+    if not text:
+        return ""
+    m = _EMAIL_RE.search(text)
+    return m.group(0).lower() if m else ""
+
 
 def _extract_mileage_from_description(text: str) -> Optional[int]:
     """
@@ -142,6 +153,73 @@ def _reconcile_mileage(
     return attr_mileage or desc_mileage or card_mileage
 
 
+def _extract_contact_from_reply(page, description: str) -> tuple[str, str]:
+    """
+    CL gates contact info behind a 'Reply' button — clicking it opens a panel
+    that may contain the seller's phone number and/or email address.
+
+    Returns (phone_digits, email) — either may be empty string.
+
+    Reply button selectors observed on CL (2024-2025):
+      #replylink              — the primary "Reply" anchor
+      button.reply-action-btn — alternate button variant
+      .reply-button           — older layout
+    """
+    phone = ""
+    email = ""
+    try:
+        # Locate the reply button / link
+        reply_btn = page.locator("#replylink, button.reply-action-btn, .reply-button").first
+        if reply_btn.count() == 0:
+            raise ValueError("no reply button found")
+
+        reply_btn.click(timeout=5_000)
+
+        # Wait for the reply panel / modal to appear
+        panel = page.locator(
+            ".reply-options, .reply-content, #replyarea, "
+            "[class*='reply-'], [id*='reply']"
+        )
+        panel.first.wait_for(state="visible", timeout=5_000)
+
+        # Try data-phone attribute on any element in the panel first (fastest)
+        phone_el = page.locator("[data-phone]").first
+        if phone_el.count():
+            raw = phone_el.get_attribute("data-phone") or ""
+            phone = _extract_phone(raw)
+
+        # Try visible tel: link or phone text inside the panel
+        if not phone:
+            tel_el = page.locator(".reply-tel, .reply-options .tel, tel, [href^='tel:']").first
+            if tel_el.count():
+                raw = (tel_el.get_attribute("href") or tel_el.inner_text()).strip()
+                phone = _extract_phone(raw)
+
+        # Try mailto: link for email
+        mailto_el = page.locator("[href^='mailto:']").first
+        if mailto_el.count():
+            href = mailto_el.get_attribute("href") or ""
+            email = _extract_email(href.replace("mailto:", ""))
+
+        # Mine full panel text for anything missed above
+        panel_text = panel.first.inner_text()
+        if not phone:
+            phone = _extract_phone(panel_text)
+        if not email:
+            email = _extract_email(panel_text)
+
+    except Exception:
+        pass  # reply button missing, timeout, or panel structure unknown
+
+    # Fall back to description text mining
+    if not phone:
+        phone = _extract_phone(description)
+    if not email:
+        email = _extract_email(description)
+
+    return phone, email
+
+
 def _extract_vin(text: str) -> str:
     """Extract a valid-looking VIN from free text. Returns first match or empty string."""
     if not text:
@@ -177,6 +255,7 @@ class RawListing:
     color: str = ""
     vin: str = ""
     seller_phone: str = ""
+    seller_email: str = ""
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -456,17 +535,16 @@ class CraigslistScraper:
                 listing.vin = vin
                 logger.debug(f"  VIN found: {vin} — {listing.title[:40]}")
 
-            # Extract phone number — try reply section first, then description
-            if not listing.seller_phone:
-                # CL shows seller's phone in the reply/contact section when provided
-                reply_el = page.locator(".reply-tel, .reply-options .tel, [data-phone]")
-                if reply_el.count():
-                    phone_text = reply_el.first.inner_text().strip()
-                    listing.seller_phone = _extract_phone(phone_text)
-            if not listing.seller_phone:
-                listing.seller_phone = _extract_phone(listing.description)
+            # Extract phone + email — click Reply button to reveal contact info,
+            # then fall back to description text mining.
+            if not listing.seller_phone and not listing.seller_email:
+                listing.seller_phone, listing.seller_email = _extract_contact_from_reply(
+                    page, listing.description
+                )
             if listing.seller_phone:
                 logger.debug(f"  Phone found: {_format_phone(listing.seller_phone)} — {listing.title[:40]}")
+            if listing.seller_email:
+                logger.debug(f"  Email found: {listing.seller_email} — {listing.title[:40]}")
 
             # Extract full-resolution images from the detail page gallery
             full_images = []

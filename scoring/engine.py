@@ -109,6 +109,7 @@ class ScoredListing:
     title_status: str = ""   # clean / salvage / rebuilt / lien / missing / unknown
     vin: str = ""
     seller_phone: str = ""
+    seller_email: str = ""
     location: str = ""
     posted_date: str = ""
     description: str = ""
@@ -191,6 +192,7 @@ class DealScorer:
             title_status=listing.title_status,
             vin=listing.vin,
             seller_phone=getattr(listing, "seller_phone", ""),
+            seller_email=getattr(listing, "seller_email", ""),
             location=listing.location,
             posted_date=listing.posted_date,
             description=listing.description,
