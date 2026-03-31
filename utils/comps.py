@@ -78,11 +78,11 @@ def _save_cache(make: str, model: str, comps: list):
 class CompsEngine:
     """
     Holds a comp price pool per (make, model).
-    Each entry: [year: int|None, mileage: int|None, price: int]
+    Each entry: [year: int|None, mileage: int|None, price: int, url: str]
     """
 
     def __init__(self, raw_listings: list):
-        # Pool: (make.lower(), model.lower()) -> [[year, mileage, price], ...]
+        # Pool: (make.lower(), model.lower()) -> [[year, mileage, price, url], ...]
         self._cache: dict[tuple, list] = {}
         self._preload(raw_listings)
 
@@ -94,7 +94,7 @@ class CompsEngine:
                 key = (l.make.lower(), l.model.lower())
                 if key not in self._cache:
                     self._cache[key] = []
-                self._cache[key].append([l.year, l.mileage, l.price])
+                self._cache[key].append([l.year, l.mileage, l.price, l.url or ""])
                 count += 1
         logger.info(f"Comps: pre-loaded {count} listings from main scrape into comp pool")
 
@@ -118,7 +118,10 @@ class CompsEngine:
                 key = (make.lower(), model.lower())
                 if key not in self._cache:
                     self._cache[key] = []
-                self._cache[key].extend(cached)
+                # Support old cache format [year, mileage, price] → pad with ""
+                self._cache[key].extend(
+                    e if len(e) >= 4 else e + [""] for e in cached
+                )
                 cache_hits += 1
             else:
                 needs_fetch.append((make, model))
@@ -165,7 +168,9 @@ class CompsEngine:
                 key = (make.lower(), model.lower())
                 if key not in self._cache:
                     self._cache[key] = []
-                self._cache[key].extend(comps)
+                self._cache[key].extend(
+                    e if len(e) >= 4 else e + [""] for e in comps
+                )
                 _save_cache(make, model, comps)
                 logger.info(
                     f"Comps: {make} {model} — {len(comps)} national CL comps "
@@ -180,56 +185,64 @@ class CompsEngine:
         mileage: Optional[int],
         year_range: int = DEFAULT_YEAR_RANGE,
         mileage_range: int = DEFAULT_MILEAGE_RANGE,
-    ) -> Optional[int]:
+    ) -> tuple[Optional[int], list[str]]:
         """
-        Return median comp price filtered to year ±year_range and mileage ±mileage_range.
+        Return (median_price, comp_urls) filtered to year ±year_range and mileage ±mileage_range.
+        comp_urls are the source listing URLs for the matched comps (deduped, up to 10).
         Falls back progressively if not enough comps pass the strict filter.
+        Returns (None, []) when no comps are available.
         """
         key = (make.lower(), model.lower())
         pool = self._cache.get(key, [])
         if not pool:
-            return None
+            return None, []
 
-        filtered = []
+        filtered_entries = []
         for entry in pool:
             comp_year, comp_mileage, price = entry[0], entry[1], entry[2]
-            # Year gate: only apply when both are known
+            url = entry[3] if len(entry) >= 4 else ""
             if year and comp_year and abs(comp_year - year) > year_range:
                 continue
-            # Mileage gate: only apply when both are known
             if mileage and comp_mileage and abs(comp_mileage - mileage) > mileage_range:
                 continue
-            filtered.append(price)
+            filtered_entries.append((price, url))
 
-        if len(filtered) >= 2:
-            return int(statistics.median(filtered))
-        if len(filtered) == 1:
-            return filtered[0]
+        if filtered_entries:
+            prices = [e[0] for e in filtered_entries]
+            urls = _dedup_urls([e[1] for e in filtered_entries])
+            if len(prices) >= 2:
+                return int(statistics.median(prices)), urls
+            return prices[0], urls
 
         # Fallback: relax mileage gate only
-        relaxed = []
+        relaxed_entries = []
         for entry in pool:
             comp_year, comp_mileage, price = entry[0], entry[1], entry[2]
+            url = entry[3] if len(entry) >= 4 else ""
             if year and comp_year and abs(comp_year - year) > year_range:
                 continue
-            relaxed.append(price)
+            relaxed_entries.append((price, url))
 
-        if len(relaxed) >= 2:
-            logger.debug(
-                f"Comps: relaxed mileage filter for {make} {model} "
-                f"— {len(relaxed)} year-matched comps"
-            )
-            return int(statistics.median(relaxed))
+        if relaxed_entries:
+            prices = [e[0] for e in relaxed_entries]
+            urls = _dedup_urls([e[1] for e in relaxed_entries])
+            if len(prices) >= 2:
+                logger.debug(
+                    f"Comps: relaxed mileage filter for {make} {model} "
+                    f"— {len(prices)} year-matched comps"
+                )
+                return int(statistics.median(prices)), urls
 
         # Last resort: all comps for make/model regardless of year/mileage
-        all_prices = [e[2] for e in pool]
-        if len(all_prices) >= 2:
+        if len(pool) >= 2:
+            prices = [e[2] for e in pool]
+            urls = _dedup_urls([e[3] if len(e) >= 4 else "" for e in pool])
             logger.debug(
                 f"Comps: no year/mileage matches for {make} {model} — using full pool median"
             )
-            return int(statistics.median(all_prices))
+            return int(statistics.median(prices)), urls
 
-        return None
+        return None, []
 
 
 # ── Internal scraper ──────────────────────────────────────────────────────────
@@ -238,15 +251,15 @@ def _scrape_cl_national(context, make: str, model: str) -> list:
     """
     Scrape the national Craigslist search (no city subdomain) for a make/model.
     Card-only — does NOT visit detail pages (fast).
-    Returns list of [year, mileage, price] entries.
+    Returns list of [year, mileage, price, url] entries.
     """
     results = []
     params = {"query": f"{make} {model}", "auto_title": "clean", "hasPic": "1"}
-    url = f"{CL_NATIONAL_BASE}/search/cto?{urlencode(params)}"
+    search_url = f"{CL_NATIONAL_BASE}/search/cto?{urlencode(params)}"
 
     page = context.new_page()
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+        page.goto(search_url, wait_until="domcontentloaded", timeout=15_000)
         try:
             page.wait_for_selector("[data-pid]", timeout=8_000)
         except PWTimeout:
@@ -274,7 +287,16 @@ def _scrape_cl_national(context, make: str, model: str) -> list:
                 meta = card.locator(".meta")
                 if meta.count():
                     mileage = _parse_mileage(meta.first.inner_text())
-                results.append([year, mileage, price])
+                # Extract listing URL from the anchor tag inside the card
+                link_el = card.locator("a.posting-title, a[href*='/d/']")
+                listing_url = ""
+                if link_el.count():
+                    href = link_el.first.get_attribute("href") or ""
+                    if href.startswith("/"):
+                        listing_url = CL_NATIONAL_BASE + href
+                    elif href.startswith("http"):
+                        listing_url = href
+                results.append([year, mileage, price, listing_url])
             except Exception:
                 continue
 
@@ -287,6 +309,19 @@ def _scrape_cl_national(context, make: str, model: str) -> list:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _dedup_urls(urls: list[str], max_count: int = 10) -> list[str]:
+    """Return up to max_count non-empty deduplicated URLs preserving order."""
+    seen: set[str] = set()
+    result = []
+    for u in urls:
+        if u and u not in seen:
+            seen.add(u)
+            result.append(u)
+            if len(result) >= max_count:
+                break
+    return result
+
 
 def _parse_price(text: str) -> Optional[int]:
     m = re.search(r"\$\s*([\d,]+)", text)

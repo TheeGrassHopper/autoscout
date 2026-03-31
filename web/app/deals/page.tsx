@@ -836,6 +836,31 @@ function ValuationTab({ deal }: { deal: Deal }) {
         </div>
       )}
 
+      {/* Local market comp sources */}
+      {deal.local_market_comp_urls && deal.local_market_comp_urls.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+            Local Market Comps ({deal.local_market_comp_urls.length})
+          </div>
+          <div className="space-y-1">
+            {deal.local_market_comp_urls.map((url, i) => (
+              <a
+                key={i}
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 hover:underline truncate"
+              >
+                <svg className="w-3 h-3 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+                <span className="truncate">{url.replace(/^https?:\/\//, "")}</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Meta grid */}
       <div className="grid grid-cols-3 gap-2 text-xs">
         {[

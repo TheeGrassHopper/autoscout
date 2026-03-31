@@ -169,9 +169,11 @@ def _rows(rows) -> list[dict]:
     out = []
     for r in rows:
         d = dict(r)
+        import json as _json
         if "image_urls" in d:
-            import json as _json
             d["image_urls"] = _json.loads(d["image_urls"] or "[]")
+        if "local_market_comp_urls" in d:
+            d["local_market_comp_urls"] = _json.loads(d["local_market_comp_urls"] or "[]")
         out.append(d)
     return out
 
@@ -328,6 +330,7 @@ def get_deal(listing_id: str):
 
     deal = dict(row)
     deal["image_urls"] = json.loads(deal.get("image_urls") or "[]")
+    deal["local_market_comp_urls"] = json.loads(deal.get("local_market_comp_urls") or "[]")
     deal["messages"] = _rows(msgs)
     return deal
 

@@ -18,6 +18,7 @@ export interface Deal {
   carvana_value: number | null;
   carmax_value: number | null;
   local_market_value: number | null;
+  local_market_comp_urls?: string[];
   blended_market_value: number | null;
   profit_estimate: number | null;
   profit_margin_pct: number | null;

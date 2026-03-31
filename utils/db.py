@@ -60,7 +60,8 @@ class Database:
                     first_seen          TEXT,
                     last_seen           TEXT,
                     carvana_offer       INTEGER,
-                    carvana_offer_margin {_REAL}
+                    carvana_offer_margin {_REAL},
+                    local_market_comp_urls TEXT
                 )
             """)
             conn.execute(f"""
@@ -94,8 +95,9 @@ class Database:
                 ("title_status",         "TEXT"),
                 ("posted_date",          "TEXT"),
                 ("image_urls",           "TEXT"),
-                ("carvana_offer",        "INTEGER"),
-                ("carvana_offer_margin", _REAL),
+                ("carvana_offer",           "INTEGER"),
+                ("carvana_offer_margin",    _REAL),
+                ("local_market_comp_urls",  "TEXT"),
             ]:
                 if not column_exists(conn, "listings", col):
                     conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
@@ -123,6 +125,7 @@ class Database:
         """Insert or update a scored listing."""
         now = datetime.now().isoformat()
         image_urls_json = json.dumps(getattr(scored_listing, "image_urls", None) or [])
+        comp_urls_json = json.dumps(getattr(scored_listing, "local_market_comp_urls", None) or [])
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO listings
@@ -131,12 +134,14 @@ class Database:
                      profit_estimate, profit_margin_pct, demand_score,
                      savings, total_score, deal_class, make, model, year, mileage,
                      location, vin, title_status, posted_date, image_urls,
-                     carvana_offer, carvana_offer_margin, first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     carvana_offer, carvana_offer_margin, local_market_comp_urls,
+                     first_seen, last_seen)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(listing_id) DO UPDATE SET
                     kbb_value=excluded.kbb_value,
                     carvana_value=excluded.carvana_value,
                     local_market_value=excluded.local_market_value,
+                    local_market_comp_urls=excluded.local_market_comp_urls,
                     blended_market_value=excluded.blended_market_value,
                     profit_estimate=excluded.profit_estimate,
                     profit_margin_pct=excluded.profit_margin_pct,
@@ -175,6 +180,7 @@ class Database:
                 image_urls_json,
                 scored_listing.carvana_offer,
                 scored_listing.carvana_offer_margin,
+                comp_urls_json,
                 now, now,
             ))
 

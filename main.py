@@ -352,12 +352,13 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
             )
 
         local_mkt_price = None
+        local_mkt_urls: list = []
         if raw.make and raw.model:
-            local_mkt_price = comps_engine.get_market_price(
+            local_mkt_price, local_mkt_urls = comps_engine.get_market_price(
                 raw.make, raw.model, raw.year, raw.mileage
             )
 
-        return price_est, carvana_price, carmax_price, local_mkt_price
+        return price_est, carvana_price, carmax_price, local_mkt_price, local_mkt_urls
 
     scored_listings = []
     # D: fetch prices for all listings in parallel (8 listings at a time)
@@ -373,7 +374,7 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
                 price_results[raw.listing_id] = future.result()
             except Exception as e:
                 logger.warning(f"  Price fetch failed for {raw.title[:40]}: {e}")
-                price_results[raw.listing_id] = (None, None, None, None)
+                price_results[raw.listing_id] = (None, None, None, None, [])
 
     if stop_check and stop_check():
         logger.info("Stop requested after pricing — halting pipeline")
@@ -381,8 +382,8 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
 
     for i, raw in enumerate(all_raw, 1):
         logger.info(f"  [{i}/{len(all_raw)}] {raw.title[:50]}")
-        price_est, carvana_price, carmax_price, local_mkt_price = price_results.get(
-            raw.listing_id, (None, None, None, None)
+        price_est, carvana_price, carmax_price, local_mkt_price, local_mkt_urls = price_results.get(
+            raw.listing_id, (None, None, None, None, [])
         )
 
         # Score (blends all available price sources)
@@ -391,6 +392,7 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
             carvana_price=carvana_price,
             carmax_price=carmax_price,
             local_market_price=local_mkt_price,
+            local_market_comp_urls=local_mkt_urls,
         )
         scored_listings.append(scored)
         db.upsert_listing(scored)

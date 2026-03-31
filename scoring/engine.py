@@ -119,6 +119,7 @@ class ScoredListing:
     carvana_value: Optional[int] = None
     carmax_value: Optional[int] = None
     local_market_value: Optional[int] = None
+    local_market_comp_urls: list = field(default_factory=list)
     blended_market_value: Optional[int] = None
     price_source_confidence: str = "low"
     savings_vs_kbb: Optional[int] = None
@@ -173,6 +174,7 @@ class DealScorer:
         carvana_price: Optional[int] = None,
         carmax_price: Optional[int] = None,
         local_market_price: Optional[int] = None,
+        local_market_comp_urls: Optional[list] = None,
     ) -> ScoredListing:
 
         scored = ScoredListing(
@@ -195,6 +197,7 @@ class DealScorer:
             carvana_value=carvana_price,
             carmax_value=carmax_price,
             local_market_value=local_market_price,
+            local_market_comp_urls=local_market_comp_urls or [],
         )
 
         if price_estimate:
