@@ -26,6 +26,7 @@ The actor scrapes: Marketplace → Vehicles → configured city → radius
 Private sellers only, clean title preferred, VIN extracted from descriptions.
 """
 
+import asyncio
 import logging
 import re
 import time

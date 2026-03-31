@@ -187,36 +187,41 @@ class CraigslistScraper:
                 except Exception as e:
                     logger.error(f"Craigslist [{cat}] failed: {e}")
 
-            # Fetch detail pages concurrently — each thread gets its own context
-            logger.info(f"Fetching {len(all_listings)} detail pages ({_DETAIL_WORKERS} workers)...")
-            ua = (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
+            browser.close()
 
-            def _detail_worker(listing: RawListing):
-                ctx = browser.new_context(user_agent=ua)
+        # Fetch detail pages concurrently — Playwright sync API is greenlet-bound
+        # and cannot share a browser across threads. Each worker launches its own
+        # playwright + browser instance.
+        logger.info(f"Fetching {len(all_listings)} detail pages ({_DETAIL_WORKERS} workers)...")
+        ua = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+
+        def _detail_worker(listing: RawListing):
+            with sync_playwright() as pw:
+                b = pw.chromium.launch(headless=True)
+                ctx = b.new_context(user_agent=ua)
                 try:
                     self._fetch_detail(ctx, listing)
                 except Exception as e:
                     logger.debug(f"Detail fetch failed for {listing.listing_id}: {e}")
                 finally:
                     ctx.close()
+                    b.close()
 
-            with ThreadPoolExecutor(max_workers=_DETAIL_WORKERS) as pool:
-                futures = {
-                    pool.submit(_detail_worker, lst): lst
-                    for lst in all_listings
-                    if lst.url
-                }
-                for fut in as_completed(futures):
-                    exc = fut.exception()
-                    if exc:
-                        lst = futures[fut]
-                        logger.debug(f"Worker exception for {lst.listing_id}: {exc}")
-
-            browser.close()
+        with ThreadPoolExecutor(max_workers=_DETAIL_WORKERS) as pool:
+            futures = {
+                pool.submit(_detail_worker, lst): lst
+                for lst in all_listings
+                if lst.url
+            }
+            for fut in as_completed(futures):
+                exc = fut.exception()
+                if exc:
+                    lst = futures[fut]
+                    logger.debug(f"Worker exception for {lst.listing_id}: {exc}")
 
         logger.info(f"Craigslist raw total: {len(all_listings)}")
         filtered = self._filter(all_listings)
