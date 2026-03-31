@@ -298,8 +298,8 @@ class CraigslistScraper:
             params["search_distance"] = self.config["search_radius_miles"]
         if self.config.get("zip_code"):
             params["postal"] = self.config["zip_code"]
-        # Always filter for clean title only
-        params["auto_title"] = "clean"
+        # Always filter for clean title only (auto_title_status=1 = clean title)
+        params["auto_title_status"] = "1"
         return f"{self.base}/search/{category}?{urlencode(params)}"
 
     def _filter(self, listings: list[RawListing]) -> list[RawListing]:
