@@ -1,8 +1,24 @@
+import { getSession } from "next-auth/react";
+import type { AuthUser } from "@/lib/auth";
+export type { AuthUser };
+
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
 
-function authHeaders(): HeadersInit {
+function authHeaders(): Record<string, string> {
   return API_KEY ? { "X-API-Key": API_KEY } : {};
+}
+
+/** Fetch with API-key + Bearer token from the active NextAuth session. */
+async function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const session = await getSession();
+  const token = session?.accessToken ?? "";
+  const headers: Record<string, string> = {
+    ...authHeaders(),
+    ...(init.headers as Record<string, string> ?? {}),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return fetch(url, { ...init, headers });
 }
 
 export type DealClass = "great" | "fair" | "poor";
@@ -34,6 +50,7 @@ export interface Deal {
   vin: string | null;
   title_status: string | null;
   seller_phone: string | null;
+  seller_email: string | null;
   suggested_offer: number | null;
   posted_date: string | null;
   first_seen: string;
@@ -80,7 +97,7 @@ export interface PipelineStatus {
 }
 
 export async function stopPipeline(): Promise<void> {
-  await fetch(`${BASE}/api/pipeline/stop`, { method: "POST", headers: userHeaders() });
+  await authedFetch(`${BASE}/api/pipeline/stop`, { method: "POST" });
 }
 
 export async function getStats(): Promise<Stats> {
@@ -123,7 +140,7 @@ export async function draftMessage(listingId: string): Promise<DraftedMessage> {
 }
 
 export async function getPipelineStatus(): Promise<PipelineStatus> {
-  const res = await fetch(`${BASE}/api/pipeline/status`, { cache: "no-store", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/api/pipeline/status`, { cache: "no-store" });
   return res.json();
 }
 
@@ -253,7 +270,7 @@ export async function runPipeline(query = "", dryRun = true, zipCode = "", radiu
   if (filters.maxYear)   params.set("max_year",    String(filters.maxYear));
   if (filters.maxPrice)  params.set("max_price",   String(filters.maxPrice));
   if (filters.maxMileage) params.set("max_mileage", String(filters.maxMileage));
-  const res = await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST" });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail ?? `Failed to start pipeline (${res.status})`);
@@ -262,50 +279,61 @@ export async function runPipeline(query = "", dryRun = true, zipCode = "", radiu
 
 // ── User portal ───────────────────────────────────────────────────────────────
 
-import { getToken, type AuthUser } from "@/lib/auth";
-export type { AuthUser };
+/** POST with a 15-second timeout — aborts and throws if server doesn't respond. */
+async function authFetch(path: string, body: object): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    return await fetch(`${BASE}${path}`, {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: { ...authHeaders() as Record<string, string>, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Request timed out — make sure the server is running");
+    }
+    if (err instanceof TypeError) {
+      throw new Error("Cannot reach the server — make sure the API is running");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-function userHeaders(): HeadersInit {
-  const h: Record<string, string> = { ...(authHeaders() as Record<string, string>) };
-  const token = getToken();
-  if (token) h["Authorization"] = `Bearer ${token}`;
-  return h;
+/** Extract a readable error message from a failed response. */
+async function apiErrorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const data = await res.json();
+    const detail = data?.detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) return detail.map((d: { msg?: string }) => d.msg).join("; ");
+    return fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export async function apiRegister(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
-  const res = await fetch(`${BASE}/auth/register`, {
-    method: "POST",
-    headers: { ...authHeaders() as Record<string, string>, "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) throw new Error((await res.json()).detail ?? "Registration failed");
+  const res = await authFetch("/auth/register", { email, password });
+  if (!res.ok) throw new Error(await apiErrorMessage(res, "Registration failed"));
   return res.json();
 }
 
 export async function apiForgotPassword(email: string): Promise<void> {
-  await fetch(`${BASE}/auth/forgot-password`, {
-    method: "POST",
-    headers: { ...authHeaders() as Record<string, string>, "Content-Type": "application/json" },
-    body: JSON.stringify({ email }),
-  });
+  await authFetch("/auth/forgot-password", { email });
 }
 
 export async function apiResetPassword(token: string, password: string): Promise<void> {
-  const res = await fetch(`${BASE}/auth/reset-password`, {
-    method: "POST",
-    headers: { ...authHeaders() as Record<string, string>, "Content-Type": "application/json" },
-    body: JSON.stringify({ token, password }),
-  });
-  if (!res.ok) throw new Error((await res.json()).detail ?? "Reset failed");
+  const res = await authFetch("/auth/reset-password", { token, password });
+  if (!res.ok) throw new Error(await apiErrorMessage(res, "Reset failed"));
 }
 
 export async function apiLogin(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: "POST",
-    headers: { ...authHeaders() as Record<string, string>, "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) throw new Error((await res.json()).detail ?? "Login failed");
+  const res = await authFetch("/auth/login", { email, password });
+  if (!res.ok) throw new Error(await apiErrorMessage(res, "Login failed"));
   return res.json();
 }
 
@@ -332,9 +360,9 @@ export interface SavedSearch {
 }
 
 export async function previewSearch(userId: number, criteria: SearchCriteria): Promise<{ count: number; results: Deal[] }> {
-  const res = await fetch(`${BASE}/users/${userId}/searches/preview`, {
+  const res = await authedFetch(`${BASE}/users/${userId}/searches/preview`, {
     method: "POST",
-    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(criteria),
   });
   if (!res.ok) throw new Error("Failed to run search");
@@ -342,15 +370,15 @@ export async function previewSearch(userId: number, criteria: SearchCriteria): P
 }
 
 export async function getSavedSearches(userId: number): Promise<SavedSearch[]> {
-  const res = await fetch(`${BASE}/users/${userId}/searches`, { cache: "no-store", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/users/${userId}/searches`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load searches");
   return res.json();
 }
 
 export async function createSavedSearch(userId: number, name: string, criteria: SearchCriteria): Promise<SavedSearch> {
-  const res = await fetch(`${BASE}/users/${userId}/searches`, {
+  const res = await authedFetch(`${BASE}/users/${userId}/searches`, {
     method: "POST",
-    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, criteria }),
   });
   if (!res.ok) throw new Error("Failed to create search");
@@ -358,9 +386,9 @@ export async function createSavedSearch(userId: number, name: string, criteria: 
 }
 
 export async function updateSavedSearch(userId: number, searchId: number, name: string, criteria: SearchCriteria): Promise<SavedSearch> {
-  const res = await fetch(`${BASE}/users/${userId}/searches/${searchId}`, {
+  const res = await authedFetch(`${BASE}/users/${userId}/searches/${searchId}`, {
     method: "PATCH",
-    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, criteria }),
   });
   if (!res.ok) throw new Error("Failed to update search");
@@ -368,39 +396,36 @@ export async function updateSavedSearch(userId: number, searchId: number, name: 
 }
 
 export async function executeSavedSearch(userId: number, searchId: number): Promise<{ count: number; results: Deal[] }> {
-  const res = await fetch(`${BASE}/users/${userId}/searches/${searchId}/execute`, {
-    method: "POST",
-    headers: userHeaders(),
-  });
+  const res = await authedFetch(`${BASE}/users/${userId}/searches/${searchId}/execute`, { method: "POST" });
   if (!res.ok) throw new Error("Failed to execute search");
   return res.json();
 }
 
 export async function deleteSavedSearch(userId: number, searchId: number): Promise<void> {
-  await fetch(`${BASE}/users/${userId}/searches/${searchId}`, { method: "DELETE", headers: userHeaders() });
+  await authedFetch(`${BASE}/users/${userId}/searches/${searchId}`, { method: "DELETE" });
 }
 
 export async function deleteAllSavedSearches(userId: number): Promise<{ deleted: number }> {
-  const res = await fetch(`${BASE}/users/${userId}/searches`, { method: "DELETE", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/users/${userId}/searches`, { method: "DELETE" });
   return res.json();
 }
 
 export async function getUserFavorites(userId: number): Promise<Deal[]> {
-  const res = await fetch(`${BASE}/users/${userId}/favorites`, { cache: "no-store", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/users/${userId}/favorites`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load favorites");
   return res.json();
 }
 
 export async function addUserFavorite(userId: number, deal: Deal): Promise<void> {
-  await fetch(`${BASE}/users/${userId}/favorites`, {
+  await authedFetch(`${BASE}/users/${userId}/favorites`, {
     method: "POST",
-    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ listing_data: deal }),
   });
 }
 
 export async function removeUserFavorite(userId: number, listingId: string): Promise<void> {
-  await fetch(`${BASE}/users/${userId}/favorites/${listingId}`, { method: "DELETE", headers: userHeaders() });
+  await authedFetch(`${BASE}/users/${userId}/favorites/${listingId}`, { method: "DELETE" });
 }
 
 // ── User profile ──────────────────────────────────────────────────────────────
@@ -414,15 +439,15 @@ export interface UserProfile {
 }
 
 export async function getUserProfile(userId: number): Promise<UserProfile> {
-  const res = await fetch(`${BASE}/users/${userId}`, { cache: "no-store", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/users/${userId}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load profile");
   return res.json();
 }
 
 export async function updateUserProfile(userId: number, data: { email?: string; notify_carvana?: boolean }): Promise<UserProfile> {
-  const res = await fetch(`${BASE}/users/${userId}`, {
+  const res = await authedFetch(`${BASE}/users/${userId}`, {
     method: "PATCH",
-    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error("Failed to update profile");
@@ -432,15 +457,15 @@ export async function updateUserProfile(userId: number, data: { email?: string; 
 // ── Admin ─────────────────────────────────────────────────────────────────────
 
 export async function adminGetUsers(): Promise<UserProfile[]> {
-  const res = await fetch(`${BASE}/admin/users`, { cache: "no-store", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/admin/users`, { cache: "no-store" });
   if (!res.ok) throw new Error("Admin access required");
   return res.json();
 }
 
 export async function adminUpdateUser(id: number, data: { role?: string; notify_carvana?: boolean; email?: string }): Promise<UserProfile> {
-  const res = await fetch(`${BASE}/admin/users/${id}`, {
+  const res = await authedFetch(`${BASE}/admin/users/${id}`, {
     method: "PATCH",
-    headers: { ...userHeaders() as Record<string, string>, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error("Failed to update user");
@@ -448,23 +473,23 @@ export async function adminUpdateUser(id: number, data: { role?: string; notify_
 }
 
 export async function adminDeleteUser(id: number): Promise<void> {
-  await fetch(`${BASE}/admin/users/${id}`, { method: "DELETE", headers: userHeaders() });
+  await authedFetch(`${BASE}/admin/users/${id}`, { method: "DELETE" });
 }
 
 export async function adminGetUserSearches(id: number): Promise<SavedSearch[]> {
-  const res = await fetch(`${BASE}/admin/users/${id}/searches`, { cache: "no-store", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/admin/users/${id}/searches`, { cache: "no-store" });
   return res.json();
 }
 
 export type AdminSavedSearch = SavedSearch & { owner_email: string };
 
 export async function adminGetAllSearches(): Promise<AdminSavedSearch[]> {
-  const res = await fetch(`${BASE}/admin/searches`, { cache: "no-store", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/admin/searches`, { cache: "no-store" });
   if (!res.ok) throw new Error("Admin access required");
   return res.json();
 }
 
 export async function adminGetUserFavorites(id: number): Promise<Deal[]> {
-  const res = await fetch(`${BASE}/admin/users/${id}/favorites`, { cache: "no-store", headers: userHeaders() });
+  const res = await authedFetch(`${BASE}/admin/users/${id}/favorites`, { cache: "no-store" });
   return res.json();
 }
