@@ -10,6 +10,7 @@ import {
   type CarscomIntel,
   type SavedSearch,
   type SearchCriteria,
+  type CarmaxOfferStatus,
   getDeals,
   getSavedSearches,
   getFavorites,
@@ -19,6 +20,8 @@ import {
   getCarvanaOfferStatus,
   startCarscomIntel,
   getCarscomIntelStatus,
+  startCarmaxOffer,
+  getCarmaxOfferStatus,
 } from "@/lib/api";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -319,6 +322,131 @@ function CarscomIntelPanel({ intel }: { intel: CarscomIntel }) {
   );
 }
 
+// ── Spinner ───────────────────────────────────────────────────────────────────
+
+function Spinner({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg className={`animate-spin flex-shrink-0 ${className}`} viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+    </svg>
+  );
+}
+
+// ── Error classification ──────────────────────────────────────────────────────
+
+function classifyError(err: string | null | undefined): { icon: string; label: string; detail: string; hint: string } {
+  const e = (err ?? "").toLowerCase();
+  if (e.includes("cloudflare") || e.includes("security verification") || e.includes("blocked"))
+    return { icon: "🛡️", label: "Cloudflare Blocked", detail: err ?? "", hint: "Carvana's bot protection blocked this request from our server. Try manually below." };
+  if (e.includes("timeout") || e.includes("timed out"))
+    return { icon: "⏱️", label: "Timed Out", detail: err ?? "", hint: "The page took too long to respond. Carvana may be slow or the flow changed." };
+  if (e.includes("changed their flow") || e.includes("no offer"))
+    return { icon: "🔄", label: "Flow Changed", detail: err ?? "", hint: "Carvana may have updated their sell page. Try manually below." };
+  if (e.includes("no vin") || e.includes("vin"))
+    return { icon: "🔑", label: "VIN Issue", detail: err ?? "", hint: "Check the VIN is 17 characters and correct." };
+  return { icon: "⚠️", label: "Automation Failed", detail: err ?? "", hint: "An unexpected error occurred. Try manually below or use Cars.com intel below." };
+}
+
+// ── CarMax Offer Section ──────────────────────────────────────────────────────
+
+function CarmaxOfferSection({ deal, vin }: { deal: Deal; vin: string }) {
+  const [job, setJob] = useState<CarmaxOfferStatus>({ status: "not_started", offer: null, offer_low: null, offer_high: null, error: null, steps: [] });
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    getCarmaxOfferStatus(deal.listing_id).then(setJob);
+  }, [deal.listing_id]);
+
+  useEffect(() => {
+    if (job.status === "running") {
+      pollRef.current = setInterval(async () => {
+        const s = await getCarmaxOfferStatus(deal.listing_id);
+        setJob(s);
+        if (s.status !== "running") clearInterval(pollRef.current!);
+      }, 3000);
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [job.status, deal.listing_id]);
+
+  const start = async () => {
+    setJob({ status: "running", offer: null, offer_low: null, offer_high: null, error: null, steps: [] });
+    await startCarmaxOffer(deal.listing_id, vin);
+  };
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-[#e31837]" />
+          <span className="text-xs font-bold text-slate-800">CarMax Cash Offer</span>
+        </div>
+        {job.status === "completed" && job.offer && (
+          <button onClick={start} className="text-xs text-slate-400 hover:text-slate-600">Refresh</button>
+        )}
+      </div>
+
+      <div className="p-4 space-y-3">
+        {/* Not started */}
+        {job.status === "not_started" && (
+          <p className="text-xs text-slate-500">Automated sell flow — fills CarMax&apos;s form using your VIN and NHTSA data.</p>
+        )}
+
+        {/* Running */}
+        {job.status === "running" && (
+          <div className="rounded-lg bg-orange-50 border border-orange-100 p-3">
+            <div className="flex items-center gap-2 text-orange-700 text-xs font-medium">
+              <Spinner className="h-3.5 w-3.5 text-orange-500" />
+              Running CarMax automation…
+            </div>
+            {job.steps.length > 0 && (
+              <div className="text-xs text-orange-400 font-mono truncate mt-1">{job.steps[job.steps.length - 1]}</div>
+            )}
+          </div>
+        )}
+
+        {/* Success */}
+        {job.status === "completed" && job.offer && (
+          <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3">
+            <div className="text-xs text-emerald-600 font-medium mb-1">CarMax Offer Range</div>
+            <div className="text-2xl font-bold text-emerald-700">{job.offer}</div>
+            {job.offer_low != null && job.offer_high != null && (
+              <div className="text-xs text-emerald-500 mt-0.5">
+                Low: ${job.offer_low.toLocaleString()} · High: ${job.offer_high.toLocaleString()}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Error */}
+        {job.status === "error" && (
+          <div className="rounded-lg bg-red-50 border border-red-200 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-red-700">
+              <span>⚠️</span> CarMax automation failed
+            </div>
+            <div className="text-xs text-red-500 leading-snug">{job.error}</div>
+            <a href={`https://www.carmax.com/sell-my-car`} target="_blank" rel="noopener noreferrer"
+              className="inline-block text-xs font-medium text-[#e31837] underline">
+              Try manually on CarMax ↗
+            </a>
+          </div>
+        )}
+
+        {/* Action */}
+        {job.status !== "running" && (
+          <button
+            onClick={start}
+            className="w-full py-2 bg-[#e31837] text-white text-xs font-semibold rounded-xl hover:opacity-90 transition-opacity"
+          >
+            {job.status === "not_started" ? "Get CarMax Offer (Auto-fill)" : "Retry CarMax Offer"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Carvana Offer Section ─────────────────────────────────────────────────────
 
 function CarvanaOfferSection({ deal }: { deal: Deal }) {
@@ -355,6 +483,14 @@ function CarvanaOfferSection({ deal }: { deal: Deal }) {
     return () => { if (intelPollRef.current) clearInterval(intelPollRef.current); };
   }, [intel?.status, deal.listing_id]);
 
+  // Auto-kick Cars.com intel when Carvana fails and VIN is available
+  useEffect(() => {
+    if (job.status === "error" && manualVin.length === 17 && intel?.status !== "running" && intel?.status !== "completed") {
+      setIntel({ status: "running", data: null });
+      startCarscomIntel(deal.listing_id);
+    }
+  }, [job.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const start = async () => {
     if (!manualVin.trim()) return;
     setJob({ status: "running", offer: null, error: null, steps: [] });
@@ -366,94 +502,128 @@ function CarvanaOfferSection({ deal }: { deal: Deal }) {
   };
 
   const vinIsValid = manualVin.trim().length === 17;
+  const errInfo = job.status === "error" ? classifyError(job.error) : null;
 
   return (
     <div className="space-y-3">
-      <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-3">
-        {/* VIN */}
-        <div>
-          <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1.5">VIN</div>
-          {deal.vin ? (
-            <div className="font-mono text-slate-900 font-bold tracking-widest text-xs break-all bg-white border border-slate-200 rounded-lg px-3 py-2">
-              {deal.vin}
-            </div>
-          ) : (
-            <input
-              className="w-full font-mono text-xs border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#00aed9] placeholder-slate-300 bg-white"
-              placeholder="Paste 17-digit VIN to get offer"
-              value={manualVin}
-              onChange={(e) => setManualVin(e.target.value.toUpperCase())}
-              maxLength={17}
-              disabled={job.status === "running"}
-            />
+      {/* VIN + Carvana block */}
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-[#00aed9]" />
+            <span className="text-xs font-bold text-slate-800">Carvana Cash Offer</span>
+          </div>
+          {job.status === "completed" && job.offer && (
+            <button onClick={start} className="text-xs text-slate-400 hover:text-slate-600">Refresh</button>
           )}
         </div>
 
-        {/* Status */}
-        {job.status === "completed" && job.offer && (
-          <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3">
-            <div className="text-xs text-emerald-600 font-medium mb-1">Carvana Cash Offer</div>
-            <div className="text-2xl font-bold text-emerald-700">{job.offer}</div>
-            <button onClick={start} className="text-xs text-emerald-500 underline mt-1">Refresh</button>
-          </div>
-        )}
-
-        {job.status === "error" && (
-          <div className="rounded-lg bg-red-50 border border-red-200 p-3">
-            <div className="text-xs text-red-700 font-medium mb-1">Automation failed</div>
-            <div className="text-xs text-red-500 leading-snug">{job.error}</div>
-          </div>
-        )}
-
-        {job.status === "running" && (
-          <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
-            <div className="flex items-center gap-2 text-blue-700 text-xs font-medium">
-              <svg className="animate-spin h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-              </svg>
-              Running Carvana automation…
-            </div>
-            {job.steps.length > 0 && (
-              <div className="text-xs text-blue-400 font-mono truncate mt-1">{job.steps[job.steps.length - 1]}</div>
+        <div className="p-4 space-y-3">
+          {/* VIN field */}
+          <div>
+            <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1.5">VIN</div>
+            {deal.vin ? (
+              <div className="font-mono text-slate-900 font-bold tracking-widest text-xs break-all bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                {deal.vin}
+              </div>
+            ) : (
+              <input
+                className="w-full font-mono text-xs border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#00aed9] placeholder-slate-300 bg-white"
+                placeholder="Paste 17-digit VIN"
+                value={manualVin}
+                onChange={(e) => setManualVin(e.target.value.toUpperCase())}
+                maxLength={17}
+                disabled={job.status === "running"}
+              />
             )}
           </div>
-        )}
 
-        {/* Primary action */}
-        {job.status !== "running" && (
-          <button
-            onClick={start}
-            disabled={!vinIsValid}
-            className="w-full flex items-center justify-center gap-2 py-2.5 bg-[#00aed9] text-white text-sm font-semibold rounded-xl hover:opacity-90 active:opacity-80 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Get Carvana Cash Offer
-          </button>
-        )}
+          {/* Running */}
+          {job.status === "running" && (
+            <div className="rounded-lg bg-blue-50 border border-blue-100 p-3">
+              <div className="flex items-center gap-2 text-blue-700 text-xs font-medium">
+                <Spinner className="h-3.5 w-3.5 text-blue-500" />
+                Running Carvana automation…
+              </div>
+              {job.steps.length > 0 && (
+                <div className="text-xs text-blue-400 font-mono truncate mt-1">{job.steps[job.steps.length - 1]}</div>
+              )}
+            </div>
+          )}
 
-        {/* Secondary links */}
-        {(deal.vin || vinIsValid) && job.status !== "running" && (
-          <div className="flex gap-2">
-            <a href={`https://www.carmax.com/car-value/vin/${manualVin || deal.vin}`} target="_blank" rel="noopener noreferrer"
-              className="flex-1 text-center px-3 py-2 bg-[#e31837] text-white text-xs font-semibold rounded-lg hover:opacity-90">
-              CarMax Offer ↗
+          {/* Success */}
+          {job.status === "completed" && job.offer && (
+            <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3">
+              <div className="text-xs text-emerald-600 font-medium mb-1">Carvana Cash Offer</div>
+              <div className="text-2xl font-bold text-emerald-700">{job.offer}</div>
+            </div>
+          )}
+
+          {/* Error — rich failure card */}
+          {job.status === "error" && errInfo && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-base">{errInfo.icon}</span>
+                <span className="text-xs font-bold text-red-700">{errInfo.label}</span>
+              </div>
+              <p className="text-xs text-red-600 leading-snug">{errInfo.hint}</p>
+              <details className="group">
+                <summary className="text-xs text-red-400 cursor-pointer hover:text-red-600 list-none flex items-center gap-1">
+                  <span className="group-open:hidden">▶ Show error detail</span>
+                  <span className="hidden group-open:inline">▼ Hide</span>
+                </summary>
+                <div className="mt-1 text-xs font-mono text-red-400 break-all leading-snug">{errInfo.detail}</div>
+              </details>
+              <div className="flex gap-2 pt-1">
+                <a
+                  href={`https://www.carvana.com/sell-my-car${manualVin ? `?vin=${manualVin}` : ""}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex-1 text-center py-1.5 text-xs font-semibold bg-[#00aed9] text-white rounded-lg hover:opacity-90"
+                >
+                  Try manually on Carvana ↗
+                </a>
+                <button onClick={start} disabled={!vinIsValid}
+                  className="flex-1 py-1.5 text-xs font-semibold bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 disabled:opacity-40">
+                  Retry
+                </button>
+              </div>
+              {intel?.status !== "running" && intel?.status !== "completed" && (
+                <p className="text-xs text-slate-500 pt-0.5">Cars.com market intel is loading below as a fallback…</p>
+              )}
+            </div>
+          )}
+
+          {/* Primary CTA */}
+          {job.status !== "running" && job.status !== "error" && (
+            <button
+              onClick={start}
+              disabled={!vinIsValid}
+              className="w-full py-2.5 bg-[#00aed9] text-white text-xs font-semibold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {job.status === "not_started" ? "Get Carvana Cash Offer (Auto-fill)" : "Refresh Offer"}
+            </button>
+          )}
+
+          {/* KBB link */}
+          {vinIsValid && (
+            <a href={`https://www.kbb.com/instant-cash-offer/?vin=${manualVin}`} target="_blank" rel="noopener noreferrer"
+              className="block w-full text-center py-2 text-xs font-semibold bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-colors">
+              KBB Instant Cash Offer ↗
             </a>
-            <a href={`https://www.kbb.com/instant-cash-offer/?vin=${manualVin || deal.vin}`} target="_blank" rel="noopener noreferrer"
-              className="flex-1 text-center px-3 py-2 bg-slate-700 text-white text-xs font-semibold rounded-lg hover:opacity-90">
-              KBB Value ↗
-            </a>
-          </div>
-        )}
+          )}
+        </div>
       </div>
+
+      {/* CarMax automated offer */}
+      {vinIsValid && <CarmaxOfferSection deal={deal} vin={manualVin} />}
 
       {/* Cars.com Intel */}
       {intel?.status === "running" && (
         <div className="rounded-xl border border-slate-200 bg-white p-4 flex items-center gap-3 text-sm text-slate-500">
-          <svg className="animate-spin h-4 w-4 flex-shrink-0 text-blue-500" viewBox="0 0 24 24" fill="none">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-          </svg>
+          <Spinner className="h-4 w-4 text-blue-500" />
           Fetching Cars.com market intel…
+          {job.status === "error" && <span className="text-xs text-slate-400">(fallback from Carvana failure)</span>}
         </div>
       )}
       {intel?.status === "completed" && intel.data && <CarscomIntelPanel intel={intel.data} />}

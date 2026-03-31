@@ -143,6 +143,27 @@ export async function getCarvanaOfferStatus(listingId: string): Promise<CarvanaO
   return res.json();
 }
 
+// ── CarMax Offer ──────────────────────────────────────────────────────────────
+
+export interface CarmaxOfferStatus {
+  status: "not_started" | "running" | "completed" | "error";
+  offer: string | null;
+  offer_low: number | null;
+  offer_high: number | null;
+  error: string | null;
+  steps: string[];
+}
+
+export async function startCarmaxOffer(listingId: string, vin?: string): Promise<void> {
+  const params = vin ? `?vin=${encodeURIComponent(vin)}` : "";
+  await fetch(`${BASE}/api/deals/${listingId}/carmax-offer${params}`, { method: "POST", headers: authHeaders() });
+}
+
+export async function getCarmaxOfferStatus(listingId: string): Promise<CarmaxOfferStatus> {
+  const res = await fetch(`${BASE}/api/deals/${listingId}/carmax-offer`, { cache: "no-store", headers: authHeaders() });
+  return res.json();
+}
+
 // ── Cars.com Market Intel ─────────────────────────────────────────────────────
 
 export interface CarscomCarfax {

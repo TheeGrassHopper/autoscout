@@ -500,6 +500,66 @@ def _run_carscom_bg(listing_id: str, listing: dict):
         logger.warning(f"[CarscomIntel] Failed for {listing_id}: {e}")
 
 
+# ── CarMax Offer ──────────────────────────────────────────────────────────────
+
+_carmax_jobs: dict = {}  # listing_id → result dict
+
+
+@app.post("/api/deals/{listing_id}/carmax-offer")
+def start_carmax_offer(listing_id: str, background_tasks: BackgroundTasks,
+                       vin: Optional[str] = None):
+    listing = None
+    if _db_exists():
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT listing_id, vin, mileage, title FROM listings WHERE listing_id=?",
+                (listing_id,)
+            ).fetchone()
+            if row:
+                listing = dict(row)
+    if not listing:
+        _ensure_fav_schema()
+        with _fav_db() as conn:
+            row = conn.execute(
+                "SELECT listing_id, vin, mileage, title FROM favorites WHERE listing_id=?",
+                (listing_id,)
+            ).fetchone()
+            if row:
+                listing = dict(row)
+    if not listing:
+        listing = {"listing_id": listing_id, "vin": None, "mileage": 50000, "title": ""}
+    if vin:
+        listing["vin"] = vin
+    if not listing.get("vin"):
+        raise HTTPException(400, "No VIN available")
+
+    _carmax_jobs[listing_id] = {"status": "running", "offer": None, "offer_low": None, "offer_high": None, "error": None, "steps": []}
+    background_tasks.add_task(_run_carmax_offer_bg, listing_id, listing)
+    return {"status": "started"}
+
+
+@app.get("/api/deals/{listing_id}/carmax-offer")
+def get_carmax_offer_status(listing_id: str):
+    return _carmax_jobs.get(listing_id, {"status": "not_started", "offer": None, "offer_low": None, "offer_high": None})
+
+
+def _run_carmax_offer_bg(listing_id: str, listing: dict):
+    import asyncio as _aio
+    from utils.carmax_sell import run_carmax_offer
+    from utils.vin_decode import decode_vin
+    try:
+        vin_data = decode_vin(listing["vin"]) if listing.get("vin") else {}
+        result = _aio.run(run_carmax_offer(
+            vin=listing["vin"],
+            mileage=int(listing.get("mileage") or 50000),
+            trim=vin_data.get("trim"),
+        ))
+        _carmax_jobs[listing_id].update(result)
+    except Exception as e:
+        _carmax_jobs[listing_id].update({"status": "error", "error": str(e)})
+        logger.warning(f"[CarmaxOffer] Failed for {listing_id}: {e}")
+
+
 # ── Messages ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/messages/queue")
