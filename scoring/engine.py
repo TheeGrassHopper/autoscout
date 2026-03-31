@@ -108,6 +108,7 @@ class ScoredListing:
     transmission: str = ""
     title_status: str = ""   # clean / salvage / rebuilt / lien / missing / unknown
     vin: str = ""
+    seller_phone: str = ""
     location: str = ""
     posted_date: str = ""
     description: str = ""
@@ -189,6 +190,7 @@ class DealScorer:
             transmission=listing.transmission,
             title_status=listing.title_status,
             vin=listing.vin,
+            seller_phone=getattr(listing, "seller_phone", ""),
             location=listing.location,
             posted_date=listing.posted_date,
             description=listing.description,

@@ -32,6 +32,37 @@ logger = logging.getLogger(__name__)
 # VIN pattern: 17 chars, no I/O/Q, must contain both letters and digits
 _VIN_RE = re.compile(r'\b([A-HJ-NPR-Z0-9]{17})\b')
 
+# Phone pattern: US numbers in common formats
+# Matches: (480) 555-1234  480-555-1234  480.555.1234  4805551234  +1 480 555 1234
+_PHONE_RE = re.compile(
+    r'(?<!\d)'
+    r'(?:\+?1[\s\-.]?)?'
+    r'(?:\(?\d{3}\)?[\s\-.]?)'
+    r'\d{3}[\s\-.]?\d{4}'
+    r'(?!\d)'
+)
+
+
+def _extract_phone(text: str) -> str:
+    """Extract the first US phone number from free text. Returns digits-only string or ''."""
+    if not text:
+        return ""
+    for m in _PHONE_RE.finditer(text):
+        digits = re.sub(r'\D', '', m.group(0))
+        # Strip leading country code 1 if present, giving 10-digit number
+        if len(digits) == 11 and digits.startswith('1'):
+            digits = digits[1:]
+        if len(digits) == 10:
+            return digits
+    return ""
+
+
+def _format_phone(digits: str) -> str:
+    """Format 10-digit string as (XXX) XXX-XXXX."""
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    return digits
+
 def _extract_mileage_from_description(text: str) -> Optional[int]:
     """
     Mine the listing description for mileage mentions.
@@ -145,6 +176,7 @@ class RawListing:
     title_status: str = ""
     color: str = ""
     vin: str = ""
+    seller_phone: str = ""
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -423,6 +455,18 @@ class CraigslistScraper:
             if vin:
                 listing.vin = vin
                 logger.debug(f"  VIN found: {vin} — {listing.title[:40]}")
+
+            # Extract phone number — try reply section first, then description
+            if not listing.seller_phone:
+                # CL shows seller's phone in the reply/contact section when provided
+                reply_el = page.locator(".reply-tel, .reply-options .tel, [data-phone]")
+                if reply_el.count():
+                    phone_text = reply_el.first.inner_text().strip()
+                    listing.seller_phone = _extract_phone(phone_text)
+            if not listing.seller_phone:
+                listing.seller_phone = _extract_phone(listing.description)
+            if listing.seller_phone:
+                logger.debug(f"  Phone found: {_format_phone(listing.seller_phone)} — {listing.title[:40]}")
 
             # Extract full-resolution images from the detail page gallery
             full_images = []

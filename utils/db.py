@@ -61,7 +61,8 @@ class Database:
                     last_seen           TEXT,
                     carvana_offer       INTEGER,
                     carvana_offer_margin {_REAL},
-                    local_market_comp_urls TEXT
+                    local_market_comp_urls TEXT,
+                    seller_phone        TEXT
                 )
             """)
             conn.execute(f"""
@@ -98,6 +99,7 @@ class Database:
                 ("carvana_offer",           "INTEGER"),
                 ("carvana_offer_margin",    _REAL),
                 ("local_market_comp_urls",  "TEXT"),
+                ("seller_phone",            "TEXT"),
             ]:
                 if not column_exists(conn, "listings", col):
                     conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
@@ -135,8 +137,8 @@ class Database:
                      savings, total_score, deal_class, make, model, year, mileage,
                      location, vin, title_status, posted_date, image_urls,
                      carvana_offer, carvana_offer_margin, local_market_comp_urls,
-                     first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     seller_phone, first_seen, last_seen)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(listing_id) DO UPDATE SET
                     kbb_value=excluded.kbb_value,
                     carvana_value=excluded.carvana_value,
@@ -152,6 +154,7 @@ class Database:
                     image_urls=excluded.image_urls,
                     carvana_offer=excluded.carvana_offer,
                     carvana_offer_margin=excluded.carvana_offer_margin,
+                    seller_phone=excluded.seller_phone,
                     last_seen=excluded.last_seen
             """, (
                 scored_listing.listing_id,
@@ -181,6 +184,7 @@ class Database:
                 scored_listing.carvana_offer,
                 scored_listing.carvana_offer_margin,
                 comp_urls_json,
+                getattr(scored_listing, "seller_phone", "") or None,
                 now, now,
             ))
 

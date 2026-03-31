@@ -32,7 +32,7 @@ import re
 import time
 from typing import Optional
 
-from scrapers.craigslist import RawListing, _extract_vin
+from scrapers.craigslist import RawListing, _extract_vin, _extract_phone
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +190,7 @@ def _parse_camoufox_items(
         description = subtitle
         vin = _extract_vin(description)
         title_status = _detect_title_status(title, description)
+        seller_phone = _extract_phone(description)
 
         listing = RawListing(
             listing_id=fb_id,
@@ -204,6 +205,7 @@ def _parse_camoufox_items(
             year=year,
             vin=vin,
             title_status=title_status,
+            seller_phone=seller_phone,
         )
 
         # Try to fill make/model/year from title
@@ -343,6 +345,7 @@ def _parse_items(
 
         vin = _extract_vin(description)
         title_status = _detect_title_status(item.get("title", ""), description)
+        seller_phone = _extract_phone(description)
 
         listing = RawListing(
             listing_id=fb_id,
@@ -357,6 +360,7 @@ def _parse_items(
             mileage=mileage,
             vin=vin,
             title_status=title_status,
+            seller_phone=seller_phone,
         )
 
         # Parse make/model/year from title

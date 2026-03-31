@@ -33,6 +33,7 @@ export interface Deal {
   location: string;
   vin: string | null;
   title_status: string | null;
+  seller_phone: string | null;
   posted_date: string | null;
   first_seen: string;
   last_seen: string;
