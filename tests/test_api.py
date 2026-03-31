@@ -166,8 +166,8 @@ def test_get_single_deal_not_found(seeded_client):
 
 def test_pipeline_status_initial_state(client):
     import api.app as app_module
-    app_module._pipeline["running"] = False
-    app_module._pipeline["last_run"] = None
+    # Fresh slot for anon user
+    app_module._pipelines.pop("anon", None)
     res = client.get("/api/pipeline/status")
     assert res.status_code == 200
     data = res.json()
@@ -179,23 +179,83 @@ def test_pipeline_status_initial_state(client):
 
 def test_pipeline_run_returns_started(client):
     import api.app as app_module
-    app_module._pipeline["running"] = False
+    app_module._pipelines.pop("anon", None)
     with patch("api.app._run_pipeline_bg"):
         res = client.post("/api/pipeline/run?query=tacoma&dry_run=true")
     assert res.status_code == 200
     assert res.json()["status"] == "started"
     # Reset state
-    app_module._pipeline["running"] = False
+    app_module._pipelines.pop("anon", None)
 
 
 def test_pipeline_run_rejects_concurrent(client):
     import api.app as app_module
-    app_module._pipeline["running"] = True
+    slot = app_module._get_pipeline("anon")
+    slot["running"] = True
     try:
         res = client.post("/api/pipeline/run")
         assert res.status_code == 409
     finally:
-        app_module._pipeline["running"] = False
+        slot["running"] = False
+
+
+def test_pipeline_users_run_concurrently(client):
+    """Two different users can run pipelines simultaneously."""
+    import api.app as app_module
+    from api.routers.auth import make_token
+
+    app_module._pipelines.pop("1", None)
+    app_module._pipelines.pop("2", None)
+
+    token1 = make_token(1, "user1@test.com")
+    token2 = make_token(2, "user2@test.com")
+    headers1 = {"Authorization": f"Bearer {token1}"}
+    headers2 = {"Authorization": f"Bearer {token2}"}
+
+    with patch("api.app._run_pipeline_bg"):
+        r1 = client.post("/api/pipeline/run?query=tacoma&dry_run=true", headers=headers1)
+    assert r1.status_code == 200, r1.json()
+
+    # User 2 should NOT be blocked by user 1's running pipeline
+    with patch("api.app._run_pipeline_bg"):
+        r2 = client.post("/api/pipeline/run?query=camry&dry_run=true", headers=headers2)
+    assert r2.status_code == 200, r2.json()
+
+    # Each user sees only their own status
+    s1 = client.get("/api/pipeline/status", headers=headers1).json()
+    s2 = client.get("/api/pipeline/status", headers=headers2).json()
+    assert s1["running"] is True
+    assert s2["running"] is True
+
+    # Cleanup
+    app_module._pipelines.pop("1", None)
+    app_module._pipelines.pop("2", None)
+
+
+def test_pipeline_stop_only_affects_own_slot(client):
+    """Stopping one user's pipeline doesn't touch another user's."""
+    import api.app as app_module
+    from api.routers.auth import make_token
+
+    token1 = make_token(1, "user1@test.com")
+    token2 = make_token(2, "user2@test.com")
+    headers1 = {"Authorization": f"Bearer {token1}"}
+    headers2 = {"Authorization": f"Bearer {token2}"}
+
+    slot1 = app_module._get_pipeline("1")
+    slot2 = app_module._get_pipeline("2")
+    slot1["running"] = True
+    slot2["running"] = True
+
+    try:
+        r = client.post("/api/pipeline/stop", headers=headers1)
+        assert r.status_code == 200
+        assert slot1["stop_requested"] is True
+        assert slot2["stop_requested"] is False
+    finally:
+        slot1["running"] = False
+        slot1["stop_requested"] = False
+        slot2["running"] = False
 
 
 # ── /api/favorites ────────────────────────────────────────────────────────────
@@ -326,12 +386,13 @@ def test_delete_database_clears_data(seeded_client):
 
 def test_delete_database_blocked_while_running(client):
     import api.app as app_module
-    app_module._pipeline["running"] = True
+    slot = app_module._get_pipeline("anon")
+    slot["running"] = True
     try:
         res = client.delete("/api/database")
         assert res.status_code == 409
     finally:
-        app_module._pipeline["running"] = False
+        slot["running"] = False
 
 
 # ── API key middleware ────────────────────────────────────────────────────────
@@ -382,3 +443,55 @@ def test_health_bypasses_api_key(tmp_path, monkeypatch):
     c = TestClient(app_module.app)
     res = c.get("/health")
     assert res.status_code == 200
+
+
+# ── CarMax offer endpoints ────────────────────────────────────────────────────
+
+def test_carmax_offer_status_not_started(seeded_client):
+    res = seeded_client.get("/api/deals/id_great/carmax-offer")
+    assert res.status_code == 200
+    assert res.json()["status"] == "not_started"
+
+
+def test_carmax_offer_start_no_vin(seeded_client):
+    """Listing with no VIN should 400."""
+    res = seeded_client.post("/api/deals/id_great/carmax-offer")
+    assert res.status_code == 400
+    assert "VIN" in res.json()["detail"]
+
+
+def test_carmax_offer_start_with_vin(seeded_client, monkeypatch):
+    """POST with explicit VIN queues a job and returns started."""
+    import api.app as app_module
+    app_module._carmax_jobs.pop("id_great", None)
+
+    with patch("api.app._run_carmax_offer_bg"):
+        res = seeded_client.post("/api/deals/id_great/carmax-offer?vin=1HGBH41JXMN109186")
+    assert res.status_code == 200
+    assert res.json()["status"] == "started"
+
+    status = seeded_client.get("/api/deals/id_great/carmax-offer").json()
+    assert status["status"] == "running"
+
+    app_module._carmax_jobs.pop("id_great", None)
+
+
+def test_carmax_offer_completed_state(seeded_client):
+    """Manually setting a completed job is returned correctly."""
+    import api.app as app_module
+    app_module._carmax_jobs["id_great"] = {
+        "status": "completed",
+        "offer": "$6,000–$9,500",
+        "offer_low": 6000,
+        "offer_high": 9500,
+        "error": None,
+        "steps": ["Navigated to CarMax", "Entered VIN", "Got offer"],
+    }
+    res = seeded_client.get("/api/deals/id_great/carmax-offer")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "completed"
+    assert data["offer_low"] == 6000
+    assert data["offer_high"] == 9500
+
+    app_module._carmax_jobs.pop("id_great", None)
