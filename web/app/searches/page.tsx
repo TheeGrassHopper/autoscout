@@ -471,18 +471,23 @@ function SearchCard({
 
 // ── New Search modal ──────────────────────────────────────────────────────────
 
-function NewSearchButton({ onCreated }: { onCreated: () => void }) {
+function NewSearchButton({ onCreated, existingNames }: { onCreated: () => void; existingNames: string[] }) {
   const [open, setOpen]     = useState(false);
   const [name, setName]     = useState("");
   const [criteria, setCriteria] = useState<SearchCriteria>({ query: "" });
   const [saving, setSaving] = useState(false);
   const user = getUser();
 
+  const trimmed = name.trim();
+  const isDuplicate = trimmed.length > 0 && existingNames.some(
+    (n) => n.toLowerCase() === trimmed.toLowerCase()
+  );
+
   const save = async () => {
-    if (!name.trim() || !user) return;
+    if (!trimmed || !user || isDuplicate) return;
     setSaving(true);
     try {
-      await createSavedSearch(user.id, name.trim(), criteria);
+      await createSavedSearch(user.id, trimmed, criteria);
       setName("");
       setCriteria({ query: "" });
       setOpen(false);
@@ -510,12 +515,21 @@ function NewSearchButton({ onCreated }: { onCreated: () => void }) {
               <label className="text-xs text-slate-500">Name</label>
               <input
                 autoFocus
-                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                className={`w-full text-sm border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 transition-colors ${
+                  isDuplicate
+                    ? "border-red-300 focus:ring-red-200"
+                    : "border-gray-200 focus:ring-slate-300"
+                }`}
                 placeholder='e.g. "Tacoma under $30k"'
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && save()}
               />
+              {isDuplicate && (
+                <p className="text-xs text-red-500 flex items-center gap-1 mt-1">
+                  <span>⚠</span> A search named &ldquo;{trimmed}&rdquo; already exists — choose a different name.
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -554,7 +568,7 @@ function NewSearchButton({ onCreated }: { onCreated: () => void }) {
               </button>
               <button
                 onClick={save}
-                disabled={saving || !name.trim()}
+                disabled={saving || !trimmed || isDuplicate}
                 className="px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700 disabled:opacity-40 transition-colors"
               >
                 {saving ? "Saving…" : "Save search"}
@@ -641,7 +655,7 @@ export default function SearchesPage() {
               {deleting ? "Deleting…" : "Clear saved"}
             </button>
           )}
-          <NewSearchButton onCreated={load} />
+          <NewSearchButton onCreated={load} existingNames={searches.map((s) => s.name)} />
         </div>
       </div>
 
