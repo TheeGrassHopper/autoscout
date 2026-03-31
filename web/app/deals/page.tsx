@@ -1256,6 +1256,36 @@ function SignalCard({ d, onClick, isSaved, onToggle, isSelected, sortKey }: {
           {reference != null && (
             <BelowMarketBar asking={d.asking_price} market={reference} />
           )}
+
+          {/* Row 6: contact */}
+          {(d.seller_phone || d.seller_email) && (
+            <div className="flex gap-1.5 pt-0.5">
+              {d.seller_phone && (
+                <a
+                  href={`tel:${d.seller_phone}`}
+                  onClick={e => e.stopPropagation()}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-medium hover:bg-emerald-100 transition-colors"
+                >
+                  <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                  </svg>
+                  {`(${d.seller_phone.slice(0,3)}) ${d.seller_phone.slice(3,6)}-${d.seller_phone.slice(6)}`}
+                </a>
+              )}
+              {d.seller_email && (
+                <a
+                  href={`mailto:${d.seller_email}`}
+                  onClick={e => e.stopPropagation()}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 text-[10px] font-medium hover:bg-blue-100 transition-colors truncate min-w-0"
+                >
+                  <svg className="w-2.5 h-2.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                  <span className="truncate">{d.seller_email}</span>
+                </a>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
