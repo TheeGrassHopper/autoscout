@@ -14,6 +14,7 @@ import {
   runPipeline,
   stopPipeline,
 } from "@/lib/api";
+import { getToken } from "@/lib/auth";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -196,9 +197,11 @@ function PipelinePanel() {
     if (!status.running) return;
     const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
     const apiKey = process.env.NEXT_PUBLIC_API_KEY ?? "";
-    const logsUrl = apiKey
-      ? `${base}/api/pipeline/logs?api_key=${encodeURIComponent(apiKey)}`
-      : `${base}/api/pipeline/logs`;
+    const userToken = getToken() ?? "";
+    const params = new URLSearchParams();
+    if (apiKey) params.set("api_key", apiKey);
+    if (userToken) params.set("token", userToken);
+    const logsUrl = `${base}/api/pipeline/logs?${params}`;
     const es = new EventSource(logsUrl);
     es.onmessage = (e) => {
       const data = JSON.parse(e.data);

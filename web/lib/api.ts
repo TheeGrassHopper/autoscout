@@ -77,7 +77,7 @@ export interface PipelineStatus {
 }
 
 export async function stopPipeline(): Promise<void> {
-  await fetch(`${BASE}/api/pipeline/stop`, { method: "POST", headers: authHeaders() });
+  await fetch(`${BASE}/api/pipeline/stop`, { method: "POST", headers: userHeaders() });
 }
 
 export async function getStats(): Promise<Stats> {
@@ -105,7 +105,7 @@ export async function skipMessage(id: number): Promise<void> {
 }
 
 export async function getPipelineStatus(): Promise<PipelineStatus> {
-  const res = await fetch(`${BASE}/api/pipeline/status`, { cache: "no-store", headers: authHeaders() });
+  const res = await fetch(`${BASE}/api/pipeline/status`, { cache: "no-store", headers: userHeaders() });
   return res.json();
 }
 
@@ -235,7 +235,7 @@ export async function runPipeline(query = "", dryRun = true, zipCode = "", radiu
   if (filters.maxYear)   params.set("max_year",    String(filters.maxYear));
   if (filters.maxPrice)  params.set("max_price",   String(filters.maxPrice));
   if (filters.maxMileage) params.set("max_mileage", String(filters.maxMileage));
-  const res = await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST", headers: authHeaders() });
+  const res = await fetch(`${BASE}/api/pipeline/run?${params}`, { method: "POST", headers: userHeaders() });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail ?? `Failed to start pipeline (${res.status})`);

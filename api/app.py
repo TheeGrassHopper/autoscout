@@ -120,16 +120,41 @@ FAV_DB_PATH = "output/favorites.db"
 # listing_id -> {"status": "running"|"completed"|"error", "offer": str|None, ...}
 _offer_jobs: dict = {}
 
-# ── Pipeline state ────────────────────────────────────────────────────────────
+# ── Pipeline state (per-user) ─────────────────────────────────────────────────
+# Keyed by user_key (str user_id from JWT, or "anon").
+# Each slot is independent — multiple users can run simultaneously.
 
-_pipeline = {
-    "running": False,
-    "last_run": None,
-    "last_count": 0,
-    "logs": queue.Queue(maxsize=500),
-    "start_time": None,       # datetime when current run started
-    "stop_requested": False,  # set by /api/pipeline/stop
-}
+_pipelines: dict[str, dict] = {}
+_pipelines_lock = threading.Lock()
+
+
+def _make_pipeline_slot() -> dict:
+    return {
+        "running": False,
+        "last_run": None,
+        "last_count": 0,
+        "logs": queue.Queue(maxsize=500),
+        "start_time": None,
+        "stop_requested": False,
+    }
+
+
+def _get_pipeline_key(request: Request) -> str:
+    """Extract user_id from Bearer token, fall back to 'anon'."""
+    from api.routers.auth import decode_token
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        payload = decode_token(auth[7:])
+        if payload and payload.get("sub"):
+            return str(payload["sub"])
+    return "anon"
+
+
+def _get_pipeline(key: str) -> dict:
+    with _pipelines_lock:
+        if key not in _pipelines:
+            _pipelines[key] = _make_pipeline_slot()
+        return _pipelines[key]
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
@@ -605,30 +630,33 @@ def skip_message(message_id: int):
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/pipeline/status")
-def pipeline_status():
+def pipeline_status(request: Request):
+    p = _get_pipeline(_get_pipeline_key(request))
     elapsed = None
-    if _pipeline["running"] and _pipeline["start_time"]:
-        elapsed = int((datetime.now() - datetime.fromisoformat(_pipeline["start_time"])).total_seconds())
+    if p["running"] and p["start_time"]:
+        elapsed = int((datetime.now() - datetime.fromisoformat(p["start_time"])).total_seconds())
     return {
-        "running": _pipeline["running"],
-        "last_run": _pipeline["last_run"],
-        "last_count": _pipeline["last_count"],
-        "start_time": _pipeline["start_time"],
+        "running": p["running"],
+        "last_run": p["last_run"],
+        "last_count": p["last_count"],
+        "start_time": p["start_time"],
         "elapsed_seconds": elapsed,
-        "stop_requested": _pipeline["stop_requested"],
+        "stop_requested": p["stop_requested"],
     }
 
 
 @app.post("/api/pipeline/stop")
-def stop_pipeline():
-    if not _pipeline["running"]:
+def stop_pipeline(request: Request):
+    p = _get_pipeline(_get_pipeline_key(request))
+    if not p["running"]:
         raise HTTPException(409, "Pipeline is not running")
-    _pipeline["stop_requested"] = True
+    p["stop_requested"] = True
     return {"status": "stop_requested"}
 
 
 @app.post("/api/pipeline/run")
 def run_pipeline_endpoint(
+    request: Request,
     background_tasks: BackgroundTasks,
     query: str = "",
     dry_run: bool = True,
@@ -640,15 +668,18 @@ def run_pipeline_endpoint(
     max_price: int = 0,
     max_mileage: int = 0,
 ):
-    if _pipeline["running"]:
-        raise HTTPException(409, "Pipeline already running")
-    # Set running=True immediately (before background task starts) to prevent race condition
-    _pipeline["running"] = True
-    _pipeline["last_run"] = datetime.now().isoformat()
-    _pipeline["start_time"] = datetime.now().isoformat()
-    _pipeline["stop_requested"] = False
+    key = _get_pipeline_key(request)
+    p = _get_pipeline(key)
+    if p["running"]:
+        raise HTTPException(409, "Your pipeline is already running")
+    # Set running=True immediately to prevent race condition
+    p["running"] = True
+    p["last_run"] = datetime.now().isoformat()
+    p["start_time"] = datetime.now().isoformat()
+    p["stop_requested"] = False
     background_tasks.add_task(
         _run_pipeline_bg,
+        pipeline_key=key,
         query=query, dry_run=dry_run,
         zip_code=zip_code, radius_miles=radius_miles,
         include_facebook=include_facebook,
@@ -658,10 +689,12 @@ def run_pipeline_endpoint(
     return {"status": "started"}
 
 
-def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", radius_miles: int = 0,
+def _run_pipeline_bg(pipeline_key: str, query: str = "", dry_run: bool = True,
+                     zip_code: str = "", radius_miles: int = 0,
                      include_facebook: bool = True, min_year: int = 0, max_year: int = 0,
                      max_price: int = 0, max_mileage: int = 0):
-    handler = _QueueLogHandler(_pipeline["logs"])
+    p = _get_pipeline(pipeline_key)
+    handler = _QueueLogHandler(p["logs"])
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s — %(message)s", "%H:%M:%S"))
     root = logging.getLogger()
     root.addHandler(handler)
@@ -672,23 +705,23 @@ def _run_pipeline_bg(query: str = "", dry_run: bool = True, zip_code: str = "", 
         results = asyncio.run(run_pipeline(
             query=query, dry_run=dry_run,
             zip_code=zip_code or None, radius_miles=radius_miles or None,
-            stop_check=lambda: _pipeline["stop_requested"],
+            stop_check=lambda: p["stop_requested"],
             include_facebook=include_facebook,
             min_year=min_year or None, max_year=max_year or None,
             max_price=max_price or None, max_mileage=max_mileage or None,
         ))
-        _pipeline["last_count"] = len(results)
-        msg = f"⛔ Pipeline stopped — {len(results)} listings processed" if _pipeline["stop_requested"] \
+        p["last_count"] = len(results)
+        msg = f"⛔ Pipeline stopped — {len(results)} listings processed" if p["stop_requested"] \
               else f"✅ Pipeline complete — {len(results)} listings processed"
-        _pipeline["logs"].put(msg)
+        p["logs"].put(msg)
     except Exception as e:
-        _pipeline["logs"].put(f"❌ Pipeline error: {e}")
+        p["logs"].put(f"❌ Pipeline error: {e}")
         logging.exception("Pipeline background task failed")
     finally:
         root.removeHandler(handler)
-        _pipeline["running"] = False
-        _pipeline["start_time"] = None
-        _pipeline["stop_requested"] = False
+        p["running"] = False
+        p["start_time"] = None
+        p["stop_requested"] = False
 
 
 class _QueueLogHandler(logging.Handler):
@@ -746,12 +779,23 @@ def prefetch_comps(background_tasks: BackgroundTasks, request: Request):
 
 
 @app.get("/api/pipeline/logs")
-def stream_logs():
-    """SSE endpoint — browser subscribes and receives live log lines."""
+def stream_logs(request: Request, token: str = ""):
+    """SSE endpoint — browser subscribes and receives live log lines for their pipeline.
+    Pass ?token=<jwt> since EventSource cannot set Authorization headers.
+    Falls back to Bearer token in header → anon.
+    """
+    if token:
+        from api.routers.auth import decode_token
+        payload = decode_token(token)
+        key = str(payload["sub"]) if payload and payload.get("sub") else "anon"
+    else:
+        key = _get_pipeline_key(request)
+    p = _get_pipeline(key)
+
     def generate():
         while True:
             try:
-                line = _pipeline["logs"].get(timeout=25)
+                line = p["logs"].get(timeout=25)
                 yield f"data: {json.dumps({'line': line})}\n\n"
             except queue.Empty:
                 yield f"data: {json.dumps({'ping': True})}\n\n"
@@ -762,8 +806,9 @@ def stream_logs():
 # ── Database reset ────────────────────────────────────────────────────────────
 
 @app.delete("/api/database")
-def reset_database():
-    if _pipeline["running"]:
+def reset_database(request: Request):
+    p = _get_pipeline(_get_pipeline_key(request))
+    if p["running"]:
         raise HTTPException(409, "Pipeline is running — stop it before clearing the database")
     if IS_PG:
         with _db_conn(DB_PATH) as conn:
