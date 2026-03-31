@@ -359,8 +359,13 @@ class CraigslistScraper:
                 listing.description = desc_el.first.inner_text().strip()[:1200]
 
             # Attribute table — odometer, title status, condition
+            # CL renders attrs as label/value pairs inside .attrgroup spans.
+            # Format varies: "title status: clean" (single span) or label span
+            # followed by value span. We handle both.
             odometer_from_attrs: Optional[int] = None
-            for row in page.locator(".attrgroup span, p.attrgroup span").all():
+            title_status_from_attrs: str = ""
+            attr_spans = page.locator(".attrgroup span, p.attrgroup span").all()
+            for i, row in enumerate(attr_spans):
                 text = row.inner_text().strip()
                 lower = text.lower()
                 if "odometer" in lower or "mileage" in lower:
@@ -368,11 +373,22 @@ class CraigslistScraper:
                     if m:
                         odometer_from_attrs = int(m.group(1).replace(",", ""))
                 elif "title status" in lower:
-                    val = lower.replace("title status:", "").strip()
-                    if val:
-                        listing.title_status = val
+                    # Value may be in same span ("title status: clean")
+                    # or in the next sibling span
+                    inline_val = re.sub(r"title status\s*:?\s*", "", lower).strip()
+                    if inline_val:
+                        title_status_from_attrs = inline_val
+                    elif i + 1 < len(attr_spans):
+                        next_text = attr_spans[i + 1].inner_text().strip().lower()
+                        if next_text and ":" not in next_text:
+                            title_status_from_attrs = next_text
                 elif "condition" in lower:
-                    listing.condition = lower.replace("condition:", "").strip()
+                    listing.condition = re.sub(r"condition\s*:?\s*", "", lower).strip()
+
+            # Apply attr-parsed title status — authoritative, don't overwrite with text mining
+            if title_status_from_attrs:
+                listing.title_status = title_status_from_attrs
+                logger.debug(f"  Title status from attrs: {title_status_from_attrs} — {listing.title[:40]}")
 
             # ── Mileage correction ────────────────────────────────────────────
             # Sellers sometimes type "125" meaning 125k miles. We reconcile:
@@ -424,13 +440,21 @@ class CraigslistScraper:
         return int(m.group(1).replace(",", "")) if m else None
 
     def _parse_title_status(self, listing: RawListing):
-        """Detect title status from the listing title and description."""
+        """Detect title status from the listing title and description.
+
+        Only used as a fallback — if title_status was already set from the
+        structured attribute table, that value is kept and text mining is skipped.
+        """
+        # Don't overwrite a structured value from the attr table with text mining
+        if listing.title_status and listing.title_status not in ("unknown", ""):
+            return
+
         text = f"{listing.title} {listing.description}".lower()
         if re.search(r"\bsalvage\b", text):
             listing.title_status = "salvage"
         elif re.search(r"\brebuilt\b", text):
             listing.title_status = "rebuilt"
-        elif re.search(r"\bclean\s*title\b", text):
+        elif re.search(r"\bclean\s*title\b|\bclean title\b", text):
             listing.title_status = "clean"
         elif re.search(r"\blien\b", text):
             listing.title_status = "lien"
