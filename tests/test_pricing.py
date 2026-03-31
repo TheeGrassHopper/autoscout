@@ -72,19 +72,20 @@ class TestCarvanaPricingCache:
         assert k1 != k2
 
     def test_playwright_import_error_returns_none_tuple(self, monkeypatch):
-        """If Playwright is not installed, return (None, None) gracefully."""
+        """If camoufox/playwright is not available, return (None, None) gracefully."""
+        import asyncio
         import builtins
         real_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == "playwright.sync_api":
-                raise ImportError("Playwright not installed")
+            if name in ("camoufox", "camoufox.async_api"):
+                raise ImportError("camoufox not installed")
             return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", mock_import)
 
         from pricing import carvana as carvana_mod
-        result = carvana_mod._fetch_from_carvana("Toyota", "Tacoma", 2020, 99999, 2, 20000)
+        result = asyncio.run(carvana_mod._fetch_from_carvana("Toyota", "Tacoma", 2020, 99999, 2, 20000))
         assert result == (None, None)
 
 
