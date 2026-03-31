@@ -2,14 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { type UserProfile, type SavedSearch, type Deal, adminGetUsers, adminUpdateUser, adminDeleteUser, adminGetUserSearches, adminGetUserFavorites } from "@/lib/api";
-import { getUser } from "@/lib/auth";
+import { useSession } from "next-auth/react";
 
 function fmt(n?: number | null) {
   return n == null ? "—" : `$${n.toLocaleString()}`;
 }
 
 export default function AdminPage() {
-  const currentUser = getUser();
+  const { data: session } = useSession();
+  const currentUser = session?.user ?? null;
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [expandedData, setExpandedData] = useState<{ searches: SavedSearch[]; favorites: Deal[] } | null>(null);
@@ -105,7 +106,7 @@ export default function AdminPage() {
                   >
                     {u.role === "admin" ? "Demote" : "Promote"}
                   </button>
-                  {u.id !== currentUser?.id && (
+                  {u.id !== (currentUser?.id ? parseInt(currentUser.id) : undefined) && (
                     <button
                       onClick={() => deleteUser(u)}
                       className="text-xs px-2 py-1 rounded border border-red-200 hover:bg-red-50 text-red-500 transition-colors"

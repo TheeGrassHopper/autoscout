@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { type UserProfile, getUserProfile, updateUserProfile } from "@/lib/api";
-import { getUser, saveAuth, getToken } from "@/lib/auth";
+import { useSession } from "next-auth/react";
 
 export default function ProfilePage() {
-  const currentUser = getUser();
+  const { data: session } = useSession();
+  const currentUser = session?.user ?? null;
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [email, setEmail] = useState("");
   const [notifyCarvana, setNotifyCarvana] = useState(false);
@@ -15,7 +16,7 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (!currentUser) return;
-    getUserProfile(currentUser.id)
+    getUserProfile(parseInt(currentUser.id))
       .then((p) => {
         setProfile(p);
         setEmail(p.email);
@@ -30,16 +31,11 @@ export default function ProfilePage() {
     setError("");
     setSaved(false);
     try {
-      const updated = await updateUserProfile(currentUser.id, {
+      const updated = await updateUserProfile(parseInt(currentUser.id), {
         email: email !== profile.email ? email : undefined,
         notify_carvana: notifyCarvana !== profile.notify_carvana ? notifyCarvana : undefined,
       });
       setProfile(updated);
-      // Sync localStorage if email changed
-      if (updated.email !== currentUser.email) {
-        const token = getToken();
-        if (token) saveAuth(token, { ...currentUser, email: updated.email });
-      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (err: unknown) {

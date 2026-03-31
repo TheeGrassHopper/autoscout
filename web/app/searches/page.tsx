@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getUser } from "@/lib/auth";
+import { useSession } from "next-auth/react";
 import {
   type Deal,
   type SavedSearch,
@@ -270,7 +270,8 @@ function SearchCard({
   const [scrapeMsg,   setScrapeMsg]   = useState("");
   const [results,     setResults]     = useState<Deal[] | null>(null);
   const [error,       setError]       = useState<string | null>(null);
-  const user = getUser();
+  const { data: session } = useSession();
+  const user = session?.user ?? null;
 
   /** Filter existing DB listings for these criteria */
   const search = async (c: SearchCriteria) => {
@@ -279,7 +280,7 @@ function SearchCard({
     setError(null);
     setResults(null);
     try {
-      const { results: deals } = await previewSearch(user.id, c);
+      const { results: deals } = await previewSearch(parseInt(user.id), c);
       setResults(deals);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Search failed");
@@ -478,7 +479,8 @@ function NewSearchButton({ onCreated, existingNames }: { onCreated: () => void; 
   const [name, setName]     = useState("");
   const [criteria, setCriteria] = useState<SearchCriteria>({ query: "" });
   const [saving, setSaving] = useState(false);
-  const user = getUser();
+  const { data: session } = useSession();
+  const user = session?.user ?? null;
 
   const trimmed = name.trim();
   const isDuplicate = trimmed.length > 0 && existingNames.some(
@@ -489,7 +491,7 @@ function NewSearchButton({ onCreated, existingNames }: { onCreated: () => void; 
     if (!trimmed || !user || isDuplicate) return;
     setSaving(true);
     try {
-      await createSavedSearch(user.id, trimmed, criteria);
+      await createSavedSearch(parseInt(user.id), trimmed, criteria);
       setName("");
       setCriteria({ query: "" });
       setOpen(false);
@@ -586,17 +588,18 @@ function NewSearchButton({ onCreated, existingNames }: { onCreated: () => void; 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function SearchesPage() {
+  const { data: session } = useSession();
+  const user = session?.user ?? null;
   const [searches,      setSearches]      = useState<SavedSearch[]>([]);
   const [allSearches,   setAllSearches]   = useState<AdminSavedSearch[]>([]);
   const [saving,        setSaving]        = useState<string | null>(null);
   const [deleting,      setDeleting]      = useState(false);
 
-  const user = getUser();
   const isAdmin = user?.role === "admin";
 
   const load = async () => {
     if (!user) return;
-    try { setSearches(await getSavedSearches(user.id)); } catch {}
+    try { setSearches(await getSavedSearches(parseInt(user.id))); } catch {}
     if (isAdmin) {
       try { setAllSearches(await adminGetAllSearches()); } catch {}
     }
@@ -608,7 +611,7 @@ export default function SearchesPage() {
     if (!user) return;
     setSaving(key);
     try {
-      await createSavedSearch(user.id, name.trim() || "Untitled", criteria);
+      await createSavedSearch(parseInt(user.id), name.trim() || "Untitled", criteria);
       await load();
     } finally {
       setSaving(null);
@@ -619,7 +622,7 @@ export default function SearchesPage() {
     if (!user) return;
     setSaving(key);
     try {
-      const updated = await updateSavedSearch(user.id, search.id, name.trim() || search.name, criteria);
+      const updated = await updateSavedSearch(parseInt(user.id), search.id, name.trim() || search.name, criteria);
       setSearches((prev) => prev.map((s) => (s.id === search.id ? updated : s)));
     } finally {
       setSaving(null);
@@ -628,7 +631,7 @@ export default function SearchesPage() {
 
   const del = async (searchId: number) => {
     if (!user) return;
-    await deleteSavedSearch(user.id, searchId);
+    await deleteSavedSearch(parseInt(user.id), searchId);
     setSearches((s) => s.filter((x) => x.id !== searchId));
   };
 
@@ -636,7 +639,7 @@ export default function SearchesPage() {
     if (!user || !confirm("Delete all saved searches?")) return;
     setDeleting(true);
     try {
-      await deleteAllSavedSearches(user.id);
+      await deleteAllSavedSearches(parseInt(user.id));
       setSearches([]);
     } finally {
       setDeleting(false);

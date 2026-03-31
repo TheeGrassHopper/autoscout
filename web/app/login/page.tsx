@@ -3,8 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { apiLogin } from "@/lib/api";
-import { saveAuth } from "@/lib/auth";
+import { signIn } from "next-auth/react";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -18,11 +17,19 @@ export default function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      const { token, user } = await apiLogin(email, password);
-      saveAuth(token, user);
-      router.push("/");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      const result = await signIn("credentials", {
+        email,
+        password,
+        redirect: false,
+      });
+      if (result?.error) {
+        setError("Invalid email or password");
+      } else {
+        router.push("/");
+        router.refresh();
+      }
+    } catch {
+      setError("Cannot reach the server — make sure the API is running");
     } finally {
       setLoading(false);
     }

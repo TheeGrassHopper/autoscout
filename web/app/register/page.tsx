@@ -3,8 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { signIn } from "next-auth/react";
 import { apiRegister } from "@/lib/api";
-import { saveAuth } from "@/lib/auth";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -22,9 +22,20 @@ export default function RegisterPage() {
     }
     setLoading(true);
     try {
-      const { token, user } = await apiRegister(email, password);
-      saveAuth(token, user);
-      router.push("/");
+      // Create the account on the backend first
+      await apiRegister(email, password);
+      // Then sign in via NextAuth so the session cookie is issued
+      const result = await signIn("credentials", {
+        email,
+        password,
+        redirect: false,
+      });
+      if (result?.error) {
+        setError("Account created but sign-in failed — please try logging in");
+      } else {
+        router.push("/");
+        router.refresh();
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Registration failed");
     } finally {

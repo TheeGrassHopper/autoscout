@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { type AuthUser, clearAuth, getUser } from "@/lib/auth";
+import { useSession, signOut } from "next-auth/react";
 import { type Stats, type PipelineStatus, getStats, getPipelineStatus } from "@/lib/api";
 
 const baseNav = [
@@ -22,19 +22,19 @@ function minutesAgo(isoString: string): number {
 export default function Sidebar() {
   const path = usePathname();
   const router = useRouter();
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const { data: session } = useSession();
+  const user = session?.user ?? null;
   const [nav, setNav] = useState(baseNav);
   const [stats, setStats] = useState<Stats | null>(null);
   const [pipeline, setPipeline] = useState<PipelineStatus | null>(null);
 
-  // Load user once
   useEffect(() => {
-    const u = getUser();
-    setUser(u);
-    if (u?.role === "admin") {
+    if (user?.role === "admin") {
       setNav([...baseNav, { href: "/admin", label: "Admin", icon: "🛡️" }]);
+    } else {
+      setNav(baseNav);
     }
-  }, []);
+  }, [user?.role]);
 
   // Poll stats + pipeline status every 10 seconds
   useEffect(() => {
@@ -60,9 +60,8 @@ export default function Sidebar() {
     };
   }, []);
 
-  const logout = () => {
-    clearAuth();
-    router.push("/login");
+  const logout = async () => {
+    await signOut({ callbackUrl: "/login" });
   };
 
   // Pipeline status label + dot color

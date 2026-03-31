@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { type Deal, type SearchCriteria, previewSearch } from "@/lib/api";
-import { getUser } from "@/lib/auth";
+import { useSession } from "next-auth/react";
 
 const DEFAULT_SEARCHES: { name: string; query: string }[] = [
   { name: "Z71",               query: "z71" },
@@ -44,6 +44,7 @@ function truncate(s: string, max: number): string {
 }
 
 export default function MarketPage() {
+  const { data: session } = useSession();
   const [rows, setRows] = useState<SearchRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +54,7 @@ export default function MarketPage() {
       setLoading(true);
       setError(null);
       try {
-        const user = getUser();
+        const user = session?.user ?? null;
         if (!user) {
           setError("Not logged in.");
           setLoading(false);
@@ -62,7 +63,7 @@ export default function MarketPage() {
 
         const results = await Promise.all(
           DEFAULT_SEARCHES.map(({ query }) =>
-            previewSearch(user.id, { query } as SearchCriteria).catch(() => ({
+            previewSearch(parseInt(user.id), { query } as SearchCriteria).catch(() => ({
               count: 0,
               results: [] as Deal[],
             }))

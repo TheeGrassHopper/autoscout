@@ -1,35 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
+import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { isLoggedIn } from "@/lib/auth";
 
-const PUBLIC_PATHS = ["/login", "/register"];
+const PUBLIC_PATHS = ["/login", "/register", "/forgot-password", "/reset-password"];
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  const { status } = useSession();
   const router = useRouter();
-  const [checked, setChecked] = useState(false);
+  const pathname = usePathname();
 
   useEffect(() => {
-    if (PUBLIC_PATHS.includes(pathname)) {
-      setChecked(true);
-      return;
-    }
-    if (!isLoggedIn()) {
+    if (status === "loading") return;
+    if (!PUBLIC_PATHS.includes(pathname) && status === "unauthenticated") {
       router.replace("/login");
-    } else {
-      setChecked(true);
     }
-  }, [pathname]);
+  }, [status, pathname, router]);
 
-  // On public pages, always render immediately (no flash)
-  if (PUBLIC_PATHS.includes(pathname)) {
-    return <>{children}</>;
-  }
+  // Public pages always render immediately
+  if (PUBLIC_PATHS.includes(pathname)) return <>{children}</>;
 
-  // Authenticated pages: wait for check to avoid flash
-  if (!checked) return null;
+  // Wait for session check before rendering protected content
+  if (status === "loading") return null;
+  if (status === "unauthenticated") return null;
 
   return <>{children}</>;
 }

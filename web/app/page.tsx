@@ -14,7 +14,7 @@ import {
   runPipeline,
   stopPipeline,
 } from "@/lib/api";
-import { getToken, getUser } from "@/lib/auth";
+import { useSession } from "next-auth/react";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -163,7 +163,8 @@ function TopDealSpotlight({ deal }: { deal: Deal | null }) {
 // ── Pipeline Panel ────────────────────────────────────────────────────────────
 
 function PipelinePanel() {
-  const user = getUser();
+  const { data: session } = useSession();
+  const user = session?.user ?? null;
   const isAdmin = user?.role === "admin";
   const [status, setStatus] = useState<PipelineStatus>({
     running: false,
@@ -200,7 +201,7 @@ function PipelinePanel() {
     if (!status.running) return;
     const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
     const apiKey = process.env.NEXT_PUBLIC_API_KEY ?? "";
-    const userToken = getToken() ?? "";
+    const userToken = session?.accessToken ?? "";
     const params = new URLSearchParams();
     if (apiKey) params.set("api_key", apiKey);
     if (userToken) params.set("token", userToken);
