@@ -60,6 +60,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "_API_KEY", "")
     monkeypatch.setattr(app_module, "DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.setattr(app_module, "FAV_DB_PATH", str(tmp_path / "fav.db"))
+    app_module._stats_cache["data"] = None
+    app_module._stats_cache["expires"] = 0.0
     app_module._ensure_fav_schema()
     return TestClient(app_module.app)
 
@@ -72,6 +74,8 @@ def seeded_client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "_API_KEY", "")
     monkeypatch.setattr(app_module, "DB_PATH", db_path)
     monkeypatch.setattr(app_module, "FAV_DB_PATH", fav_path)
+    app_module._stats_cache["data"] = None
+    app_module._stats_cache["expires"] = 0.0
     _seed_listings(db_path)
     app_module._ensure_fav_schema()
     return TestClient(app_module.app)

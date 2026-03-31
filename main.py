@@ -97,35 +97,32 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
                 f"max ${effective_filters['max_price']:,}, max {effective_filters['max_mileage']:,}mi")
     logger.info("=" * 60)
 
-    # ── Step 1: Scrape listings ───────────────────────────────────────────────
-    logger.info("STEP 1 — Scraping listings")
+    # ── Step 1: Scrape listings (CL + FB concurrently) ───────────────────────
+    logger.info("STEP 1 — Scraping listings (Craigslist + Facebook in parallel)")
 
-    all_raw = []
     seen_ids: set[str] = set()
 
-    # Craigslist
-    if SOURCES.get("craigslist"):
+    async def _scrape_cl():
+        if not SOURCES.get("craigslist"):
+            return []
         scraper = CraigslistScraper(
             city=LOCATION["city"],
             config={**effective_filters, "search_radius_miles": effective_radius, "zip_code": effective_zip},
             vehicle_types=VEHICLE_TYPES,
         )
-        cl_listings = await asyncio.to_thread(scraper.scrape, query)
-        for l in cl_listings:
-            if l.listing_id not in seen_ids:
-                seen_ids.add(l.listing_id)
-                all_raw.append(l)
-        logger.info(f"Craigslist: {len(cl_listings)} listings after filtering")
+        results = await asyncio.to_thread(scraper.scrape, query)
+        logger.info(f"Craigslist: {len(results)} listings after filtering")
+        return results
 
-    # Facebook Marketplace (requires APIFY_API_TOKEN + FB_COOKIES)
-    fb_env_enabled = os.getenv("FB_SCRAPER_ENABLED", "").lower()
-    fb_active = SOURCES.get("facebook_marketplace") and fb_env_enabled != "false" and include_facebook
-    if not fb_active:
-        if not include_facebook:
-            logger.info("FB Marketplace scrape skipped (disabled by caller)")
-        elif fb_env_enabled == "false":
-            logger.info("FB Marketplace scrape skipped (FB_SCRAPER_ENABLED=false)")
-    if fb_active:
+    async def _scrape_fb():
+        fb_env_enabled = os.getenv("FB_SCRAPER_ENABLED", "").lower()
+        fb_active = SOURCES.get("facebook_marketplace") and fb_env_enabled != "false" and include_facebook
+        if not fb_active:
+            if not include_facebook:
+                logger.info("FB Marketplace scrape skipped (disabled by caller)")
+            elif fb_env_enabled == "false":
+                logger.info("FB Marketplace scrape skipped (FB_SCRAPER_ENABLED=false)")
+            return []
         import json as _json
         apify_token = os.getenv("APIFY_API_TOKEN", "")
         fb_cookies_raw = os.getenv("FB_COOKIES", "")
@@ -136,7 +133,7 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
             except Exception:
                 logger.warning("FB_COOKIES in .env is not valid JSON — skipping FB scrape")
         keywords = [query] if query else (SEARCH_QUERIES or [""])
-        fb_listings = await asyncio.to_thread(
+        results = await asyncio.to_thread(
             scrape_facebook,
             location=LOCATION["city"],
             keywords=[k for k in keywords if k],
@@ -148,8 +145,20 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
             seen_ids=seen_ids,
             fb_cookies=fb_cookies,
         )
-        all_raw.extend(fb_listings)
-        logger.info(f"Facebook Marketplace: {len(fb_listings)} new listings")
+        logger.info(f"Facebook Marketplace: {len(results)} new listings")
+        return results
+
+    cl_listings, fb_listings = await asyncio.gather(_scrape_cl(), _scrape_fb())
+
+    all_raw = []
+    for l in cl_listings:
+        if l.listing_id not in seen_ids:
+            seen_ids.add(l.listing_id)
+            all_raw.append(l)
+    for l in fb_listings:
+        if l.listing_id not in seen_ids:
+            seen_ids.add(l.listing_id)
+            all_raw.append(l)
 
     if not all_raw:
         logger.warning("No listings found. Check your filters or try a broader search.")
@@ -164,9 +173,18 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     # ── Step 1.5: AI normalization (fills in missing make/model/year) ─────────
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
     if anthropic_key:
-        logger.info("STEP 1.5 — AI normalizing listings (Claude)")
-        from utils.normalizer import normalize_batch
-        all_raw = normalize_batch(all_raw, api_key=anthropic_key)
+        incomplete = [l for l in all_raw if not (l.make and l.model and l.year)]
+        complete   = [l for l in all_raw if l.make and l.model and l.year]
+        if incomplete:
+            logger.info(
+                f"STEP 1.5 — AI normalizing {len(incomplete)} incomplete listings "
+                f"({len(complete)} already complete, skipped)"
+            )
+            from utils.normalizer import normalize_batch
+            normalized = normalize_batch(incomplete, api_key=anthropic_key)
+            all_raw = complete + normalized
+        else:
+            logger.info("STEP 1.5 — All listings already complete, skipping AI normalization")
     else:
         logger.info("STEP 1.5 — Skipping AI normalization (no ANTHROPIC_API_KEY)")
 

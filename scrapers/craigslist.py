@@ -17,11 +17,15 @@ Selectors confirmed against live phoenix.craigslist.org (2025):
 
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlencode
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+_DETAIL_WORKERS = 5  # concurrent detail page fetches
 
 logger = logging.getLogger(__name__)
 
@@ -183,14 +187,34 @@ class CraigslistScraper:
                 except Exception as e:
                     logger.error(f"Craigslist [{cat}] failed: {e}")
 
-            # Fetch detail pages to extract description + VIN
-            logger.info(f"Fetching listing details for VIN/description extraction...")
-            for listing in all_listings:
-                if listing.url:
-                    try:
-                        self._fetch_detail(context, listing)
-                    except Exception as e:
-                        logger.debug(f"Detail fetch failed for {listing.listing_id}: {e}")
+            # Fetch detail pages concurrently — each thread gets its own context
+            logger.info(f"Fetching {len(all_listings)} detail pages ({_DETAIL_WORKERS} workers)...")
+            ua = (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+
+            def _detail_worker(listing: RawListing):
+                ctx = browser.new_context(user_agent=ua)
+                try:
+                    self._fetch_detail(ctx, listing)
+                except Exception as e:
+                    logger.debug(f"Detail fetch failed for {listing.listing_id}: {e}")
+                finally:
+                    ctx.close()
+
+            with ThreadPoolExecutor(max_workers=_DETAIL_WORKERS) as pool:
+                futures = {
+                    pool.submit(_detail_worker, lst): lst
+                    for lst in all_listings
+                    if lst.url
+                }
+                for fut in as_completed(futures):
+                    exc = fut.exception()
+                    if exc:
+                        lst = futures[fut]
+                        logger.debug(f"Worker exception for {lst.listing_id}: {exc}")
 
             browser.close()
 
@@ -203,7 +227,7 @@ class CraigslistScraper:
         page = context.new_page()
         results = []
         try:
-            page.goto(url, wait_until="networkidle", timeout=30_000)
+            page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             try:
                 page.wait_for_selector("[data-pid]", timeout=15_000)
             except PWTimeout:
@@ -328,7 +352,6 @@ class CraigslistScraper:
         page = context.new_page()
         try:
             page.goto(listing.url, wait_until="domcontentloaded", timeout=20_000)
-            page.wait_for_timeout(1500)
 
             # Full description
             desc_el = page.locator("#postingbody, .posting-description, section.postingbody")
