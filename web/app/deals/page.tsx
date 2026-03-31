@@ -1006,16 +1006,22 @@ function DealPanel({ deal, onClose, embedded }: { deal: Deal; onClose: () => voi
 
 // ── Signal Card ───────────────────────────────────────────────────────────────
 
-function SignalCard({ d, onClick, isSaved, onToggle, isSelected }: {
+function SignalCard({ d, onClick, isSaved, onToggle, isSelected, sortKey }: {
   d: Deal;
   onClick: () => void;
   isSaved: boolean;
   onToggle: (e: React.MouseEvent, id: string) => void;
   isSelected: boolean;
+  sortKey: SortKey;
 }) {
   const reference = d.blended_market_value ?? d.kbb_value;
   const savings = d.savings ?? (reference ? reference - d.asking_price : null);
   const posted = daysAgo(d.posted_date);
+  // When sorted by newest, show scraped time prominently; otherwise show posted age
+  const scrapedLabel = d.first_seen
+    ? `scraped ${daysAgo(d.first_seen) ?? new Date(d.first_seen).toLocaleDateString()}`
+    : null;
+  const timeLabel = sortKey === "first_seen" ? scrapedLabel : posted;
   const thumb = d.image_urls?.[0];
 
   return (
@@ -1060,7 +1066,11 @@ function SignalCard({ d, onClick, isSaved, onToggle, isSelected }: {
           <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
             <span>{fmtMi(d.mileage)}</span>
             {d.location && <span className="truncate max-w-[100px]">{d.location}</span>}
-            {posted && <span className="ml-auto">{posted}</span>}
+            {timeLabel && (
+              <span className={`ml-auto ${sortKey === "first_seen" ? "text-blue-500 font-medium" : ""}`}>
+                {timeLabel}
+              </span>
+            )}
           </div>
 
           {/* Row 4: prices */}
@@ -1088,11 +1098,17 @@ function SignalCard({ d, onClick, isSaved, onToggle, isSelected }: {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type SortKey = "profit_estimate" | "title" | "asking_price" | "total_score" | "mileage";
+type SortKey = "profit_estimate" | "title" | "asking_price" | "total_score" | "mileage" | "first_seen";
 type SortDir = "asc" | "desc";
 
 function sortDeals(deals: Deal[], key: SortKey, dir: SortDir): Deal[] {
   return [...deals].sort((a, b) => {
+    // Date sort: compare ISO strings (lexicographic works for ISO 8601)
+    if (key === "first_seen") {
+      const av = a.first_seen ?? "";
+      const bv = b.first_seen ?? "";
+      return dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+    }
     let av: number | string | null = null;
     let bv: number | string | null = null;
     if (key === "title") { av = a.title ?? ""; bv = b.title ?? ""; }
@@ -1106,10 +1122,11 @@ function sortDeals(deals: Deal[], key: SortKey, dir: SortDir): Deal[] {
 }
 
 const SORT_OPTIONS: { label: string; key: SortKey }[] = [
-  { label: "Score", key: "total_score" },
-  { label: "Profit", key: "profit_estimate" },
-  { label: "Price", key: "asking_price" },
-  { label: "Miles", key: "mileage" },
+  { label: "Score",    key: "total_score" },
+  { label: "Profit",   key: "profit_estimate" },
+  { label: "Price",    key: "asking_price" },
+  { label: "Miles",    key: "mileage" },
+  { label: "Newest",   key: "first_seen" },
 ];
 
 // ── Search filter helpers ─────────────────────────────────────────────────────
@@ -1163,8 +1180,13 @@ export default function DealsPage() {
   const [activeSearchIds, setActiveSearchIds] = useState<Set<string>>(new Set());
 
   function handleSort(key: SortKey) {
-    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortKey(key); setSortDir("desc"); }
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // Newest first is the natural default for a date sort
+      setSortDir(key === "first_seen" ? "desc" : "desc");
+    }
   }
 
   useEffect(() => {
@@ -1377,6 +1399,7 @@ export default function DealsPage() {
                   isSaved={favoriteIds.has(d.listing_id)}
                   onToggle={toggleFavorite}
                   isSelected={selected?.listing_id === d.listing_id}
+                  sortKey={sortKey}
                 />
               ))}
             </div>
