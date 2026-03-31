@@ -143,6 +143,62 @@ export async function getCarvanaOfferStatus(listingId: string): Promise<CarvanaO
   return res.json();
 }
 
+// ── Cars.com Market Intel ─────────────────────────────────────────────────────
+
+export interface CarscomCarfax {
+  clean_title: boolean;
+  no_accidents: boolean;
+  one_owner: boolean;
+  service_records: boolean;
+}
+
+export interface CarscomComp {
+  title: string | null;
+  price: number | null;
+  mileage: number | null;
+  year: number | null;
+  trim: string | null;
+  deal_rating: string | null;
+  flip_score: number | null;
+  url: string | null;
+}
+
+export interface CarscomIntel {
+  vin: string;
+  target: { url: string | null; title: string | null; price: number | null; mileage: number | null; trim: string | null; dealer_name: string | null } | null;
+  flip_score: number | null;
+  flip_breakdown: { deal_rating_score: number | null; price_score: number | null; carfax_score: number | null; resale_score: number | null };
+  deal_rating: string | null;
+  deal_savings: number | null;
+  price_drop: number | null;
+  carfax: CarscomCarfax;
+  exterior_color: string | null;
+  interior_color: string | null;
+  transmission: string | null;
+  drivetrain: string | null;
+  fuel_type: string | null;
+  mpg_city: number | null;
+  mpg_highway: number | null;
+  comparables: CarscomComp[];
+  avg_comp_price: number | null;
+  comp_count: number;
+}
+
+export interface CarscomIntelStatus {
+  status: "not_started" | "running" | "completed" | "error" | "no_vin";
+  data: CarscomIntel | null;
+  error?: string;
+}
+
+export async function startCarscomIntel(listingId: string): Promise<void> {
+  await fetch(`${BASE}/api/deals/${listingId}/carscom-intel`, { method: "POST", headers: authHeaders() });
+}
+
+export async function getCarscomIntelStatus(listingId: string): Promise<CarscomIntelStatus> {
+  const res = await fetch(`${BASE}/api/deals/${listingId}/carscom-intel`, { cache: "no-store", headers: authHeaders() });
+  return res.json();
+}
+
 export interface RunFilters {
   minYear?: number;
   maxYear?: number;

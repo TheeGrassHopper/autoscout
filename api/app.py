@@ -442,6 +442,64 @@ def _run_carvana_offer_bg(listing_id: str, listing: dict, user_id: Optional[int]
         _offer_jobs[listing_id].update({"status": "error", "error": str(e)})
 
 
+# ── Cars.com Market Intel ─────────────────────────────────────────────────────
+
+_carscom_jobs: dict = {}  # listing_id → result dict
+
+@app.get("/api/deals/{listing_id}/carscom-intel")
+def get_carscom_intel_status(listing_id: str):
+    """Return cached or in-progress Cars.com intel for a listing."""
+    return _carscom_jobs.get(listing_id, {"status": "not_started", "data": None})
+
+
+@app.post("/api/deals/{listing_id}/carscom-intel")
+def start_carscom_intel(listing_id: str, background_tasks: BackgroundTasks):
+    """Kick off a Cars.com Apify lookup for the listing's VIN in the background."""
+    listing = None
+    if _db_exists():
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT listing_id, vin, mileage, make, model, year FROM listings WHERE listing_id=?",
+                (listing_id,)
+            ).fetchone()
+            if row:
+                listing = dict(row)
+    if not listing:
+        _ensure_fav_schema()
+        with _fav_db() as conn:
+            row = conn.execute(
+                "SELECT listing_id, vin, mileage, make, model, year FROM favorites WHERE listing_id=?",
+                (listing_id,)
+            ).fetchone()
+            if row:
+                listing = dict(row)
+    if not listing:
+        listing = {"listing_id": listing_id, "vin": None, "mileage": None, "make": "", "model": "", "year": None}
+
+    if not listing.get("vin"):
+        return {"status": "no_vin", "data": None}
+
+    _carscom_jobs[listing_id] = {"status": "running", "data": None}
+    background_tasks.add_task(_run_carscom_bg, listing_id, listing)
+    return {"status": "started"}
+
+
+def _run_carscom_bg(listing_id: str, listing: dict):
+    from pricing.carscom_apify import get_carscom_intel
+    try:
+        data = get_carscom_intel(
+            vin=listing.get("vin", ""),
+            make=listing.get("make", ""),
+            model=listing.get("model", ""),
+            year=listing.get("year"),
+            mileage=listing.get("mileage"),
+        )
+        _carscom_jobs[listing_id] = {"status": "completed", "data": data}
+    except Exception as e:
+        _carscom_jobs[listing_id] = {"status": "error", "data": None, "error": str(e)}
+        logger.warning(f"[CarscomIntel] Failed for {listing_id}: {e}")
+
+
 # ── Messages ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/messages/queue")
