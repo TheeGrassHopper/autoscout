@@ -352,7 +352,7 @@ function classifyError(err: string | null | undefined): { icon: string; label: s
 
 // ── CarMax Offer Section ──────────────────────────────────────────────────────
 
-function CarmaxOfferSection({ deal, vin }: { deal: Deal; vin: string }) {
+function CarmaxOfferSection({ deal, vin, vinIsValid }: { deal: Deal; vin: string; vinIsValid: boolean }) {
   const [job, setJob] = useState<CarmaxOfferStatus>({ status: "not_started", offer: null, offer_low: null, offer_high: null, error: null, steps: [] });
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -390,8 +390,13 @@ function CarmaxOfferSection({ deal, vin }: { deal: Deal; vin: string }) {
       </div>
 
       <div className="p-4 space-y-3">
-        {/* Not started */}
-        {job.status === "not_started" && (
+        {/* No VIN hint */}
+        {!vinIsValid && job.status === "not_started" && (
+          <p className="text-xs text-slate-500">
+            Enter the VIN above (in the Carvana section) to auto-fill the CarMax sell form, or go manually.
+          </p>
+        )}
+        {vinIsValid && job.status === "not_started" && (
           <p className="text-xs text-slate-500">Automated sell flow — fills CarMax&apos;s form using your VIN and NHTSA data.</p>
         )}
 
@@ -428,7 +433,7 @@ function CarmaxOfferSection({ deal, vin }: { deal: Deal; vin: string }) {
               <span>⚠️</span> CarMax automation failed
             </div>
             <div className="text-xs text-red-500 leading-snug">{job.error}</div>
-            <a href={`https://www.carmax.com/sell-my-car`} target="_blank" rel="noopener noreferrer"
+            <a href="https://www.carmax.com/sell-my-car" target="_blank" rel="noopener noreferrer"
               className="inline-block text-xs font-medium text-[#e31837] underline">
               Try manually on CarMax ↗
             </a>
@@ -439,11 +444,19 @@ function CarmaxOfferSection({ deal, vin }: { deal: Deal; vin: string }) {
         {job.status !== "running" && (
           <button
             onClick={start}
-            className="w-full py-2 bg-[#e31837] text-white text-xs font-semibold rounded-xl hover:opacity-90 transition-opacity"
+            disabled={!vinIsValid}
+            className="w-full py-2 bg-[#e31837] text-white text-xs font-semibold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+            title={!vinIsValid ? "Enter a 17-digit VIN above to enable auto-fill" : undefined}
           >
             {job.status === "not_started" ? "Get CarMax Offer (Auto-fill)" : "Retry CarMax Offer"}
           </button>
         )}
+
+        {/* Always-visible manual fallback */}
+        <a href="https://www.carmax.com/sell-my-car" target="_blank" rel="noopener noreferrer"
+          className="block w-full text-center py-2 text-xs font-semibold bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-colors">
+          Go to CarMax manually ↗
+        </a>
       </div>
     </div>
   );
@@ -607,18 +620,19 @@ function CarvanaOfferSection({ deal }: { deal: Deal }) {
             </button>
           )}
 
-          {/* KBB link */}
-          {vinIsValid && (
-            <a href={`https://www.kbb.com/instant-cash-offer/?vin=${manualVin}`} target="_blank" rel="noopener noreferrer"
-              className="block w-full text-center py-2 text-xs font-semibold bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-colors">
-              KBB Instant Cash Offer ↗
-            </a>
-          )}
+          {/* KBB link — always visible */}
+          <a
+            href={vinIsValid ? `https://www.kbb.com/instant-cash-offer/?vin=${manualVin}` : "https://www.kbb.com/instant-cash-offer/"}
+            target="_blank" rel="noopener noreferrer"
+            className="block w-full text-center py-2 text-xs font-semibold bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-200 transition-colors"
+          >
+            {vinIsValid ? "KBB Instant Cash Offer ↗" : "KBB Instant Cash Offer (enter VIN above for best results) ↗"}
+          </a>
         </div>
       </div>
 
-      {/* CarMax automated offer */}
-      {vinIsValid && <CarmaxOfferSection deal={deal} vin={manualVin} />}
+      {/* CarMax automated offer — always visible */}
+      <CarmaxOfferSection deal={deal} vin={manualVin} vinIsValid={vinIsValid} />
 
       {/* Cars.com Intel */}
       {intel?.status === "running" && (
