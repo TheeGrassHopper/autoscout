@@ -690,10 +690,26 @@ def pipeline_status(request: Request):
     elapsed = None
     if p["running"] and p["start_time"]:
         elapsed = int((datetime.now() - datetime.fromisoformat(p["start_time"])).total_seconds())
+
+    # Persist last_run across server restarts by falling back to max(last_seen)
+    last_run = p["last_run"]
+    last_count = p["last_count"]
+    if not last_run:
+        try:
+            with _db() as conn:
+                row = conn.execute(
+                    "SELECT MAX(last_seen) as lr, COUNT(*) as cnt FROM listings"
+                ).fetchone()
+                if row and row["lr"]:
+                    last_run = row["lr"]
+                    last_count = row["cnt"]
+        except Exception:
+            pass
+
     return {
         "running": p["running"],
-        "last_run": p["last_run"],
-        "last_count": p["last_count"],
+        "last_run": last_run,
+        "last_count": last_count,
         "start_time": p["start_time"],
         "elapsed_seconds": elapsed,
         "stop_requested": p["stop_requested"],

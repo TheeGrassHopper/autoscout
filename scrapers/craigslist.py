@@ -155,61 +155,56 @@ def _reconcile_mileage(
 
 def _extract_contact_from_reply(page, description: str) -> tuple[str, str]:
     """
-    CL gates contact info behind a 'Reply' button — clicking it opens a panel
-    that may contain the seller's phone number and/or email address.
+    CL gates contact info behind a 'Reply' button — clicking it reveals the
+    .cl-reply-flap panel containing the seller's name, phone, and/or email.
+
+    DOM confirmed on live listings (2025):
+      #replylink            — the "Reply" anchor that opens the flap
+      .cl-reply-flap        — the panel that slides into view after click
+      [href^='tel:']        — call / text phone links inside the flap
+      [href^='mailto:']     — email link inside the flap
 
     Returns (phone_digits, email) — either may be empty string.
-
-    Reply button selectors observed on CL (2024-2025):
-      #replylink              — the primary "Reply" anchor
-      button.reply-action-btn — alternate button variant
-      .reply-button           — older layout
     """
     phone = ""
     email = ""
     try:
-        # Locate the reply button / link
-        reply_btn = page.locator("#replylink, button.reply-action-btn, .reply-button").first
-        if reply_btn.count() == 0:
+        # Click the reply button to reveal .cl-reply-flap
+        reply_btn = page.locator("#replylink, .reply-button-link, button[data-href*='reply']").first
+        if not reply_btn.count():
             raise ValueError("no reply button found")
 
         reply_btn.click(timeout=5_000)
 
-        # Wait for the reply panel / modal to appear
-        panel = page.locator(
-            ".reply-options, .reply-content, #replyarea, "
-            "[class*='reply-'], [id*='reply']"
-        )
-        panel.first.wait_for(state="visible", timeout=5_000)
+        # Wait for the flap panel to become visible
+        flap = page.locator(".cl-reply-flap")
+        flap.first.wait_for(state="visible", timeout=6_000)
 
-        # Try data-phone attribute on any element in the panel first (fastest)
-        phone_el = page.locator("[data-phone]").first
-        if phone_el.count():
-            raw = phone_el.get_attribute("data-phone") or ""
-            phone = _extract_phone(raw)
+        # Extract phone from tel: links inside the flap (call or text)
+        tel_links = flap.locator("[href^='tel:']").all()
+        for tel in tel_links:
+            href = tel.get_attribute("href") or ""
+            p = _extract_phone(href.replace("tel:", ""))
+            if p:
+                phone = p
+                break
 
-        # Try visible tel: link or phone text inside the panel
-        if not phone:
-            tel_el = page.locator(".reply-tel, .reply-options .tel, tel, [href^='tel:']").first
-            if tel_el.count():
-                raw = (tel_el.get_attribute("href") or tel_el.inner_text()).strip()
-                phone = _extract_phone(raw)
-
-        # Try mailto: link for email
-        mailto_el = page.locator("[href^='mailto:']").first
+        # Extract email from mailto: link inside the flap
+        mailto_el = flap.locator("[href^='mailto:']").first
         if mailto_el.count():
             href = mailto_el.get_attribute("href") or ""
             email = _extract_email(href.replace("mailto:", ""))
 
-        # Mine full panel text for anything missed above
-        panel_text = panel.first.inner_text()
+        # Mine full flap text as a fallback for phone
         if not phone:
-            phone = _extract_phone(panel_text)
+            flap_text = flap.first.inner_text()
+            phone = _extract_phone(flap_text)
         if not email:
-            email = _extract_email(panel_text)
+            flap_text = flap.first.inner_text()
+            email = _extract_email(flap_text)
 
     except Exception:
-        pass  # reply button missing, timeout, or panel structure unknown
+        pass  # reply button missing, timeout, or flap structure changed
 
     # Fall back to description text mining
     if not phone:

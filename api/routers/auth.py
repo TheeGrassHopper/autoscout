@@ -14,7 +14,7 @@ from jose import jwt
 from pydantic import BaseModel
 
 from utils.user_db import UserDB
-from utils.email import send_email
+from utils.email import send_email, password_reset_html
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,7 @@ async def forgot_password(body: ForgotPasswordRequest):
                 f"If you did not request this, you can safely ignore this email.\n\n"
                 f"— AutoScout AI"
             ),
+            html=password_reset_html(reset_link),
         )
     return {"detail": "If that email is registered, a reset link has been sent."}
 
