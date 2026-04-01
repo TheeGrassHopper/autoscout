@@ -64,8 +64,8 @@ def scrape_facebook(
     fb_cookies: Optional[list] = None,
 ) -> list[RawListing]:
     """
-    Scrape FB Marketplace vehicles via Apify.
-    Requires fb_cookies (list of cookie dicts) for authenticated access.
+    Scrape FB Marketplace vehicles via curious_coder/facebook-marketplace Apify actor.
+    Cookies (JSON array or header string) enable authenticated access and seller details.
     Returns empty list on failure — pipeline continues with other sources.
     """
     if not apify_token:
@@ -79,36 +79,8 @@ def scrape_facebook(
         )
         return []
 
-    _check_cookie_expiry(fb_cookies)
-
-    city_slug = location.lower().replace(" ", "").replace(",", "")
-    query = keywords[0] if keywords else ""
-
-    # ── Primary: camoufox stealth browser (bypasses FB bot detection) ─────────
-    logger.info(f"FB Marketplace: trying camoufox scraper (query={query!r}, radius={radius_miles}mi)")
-    from scrapers.facebook_camoufox import (
-        scrape_fb_marketplace_async, _parse_price, _parse_year, _parse_mileage,
-    )
-    raw_items = asyncio.run(scrape_fb_marketplace_async(
-        city_slug=city_slug,
-        query=query,
-        min_price=min_price,
-        max_price=max_price,
-        radius_miles=radius_miles,
-        fb_cookies=fb_cookies,
-        max_items=100,
-    ))
-
-    if raw_items:
-        listings = _parse_camoufox_items(raw_items, location, max_mileage, seen_ids)
-        logger.info(f"FB camoufox: {len(listings)} listings parsed")
-        return listings
-
-    # ── Fallback: Apify actor (may be blocked, but worth trying) ──────────────
-    logger.warning("FB camoufox returned 0 items — falling back to Apify actor")
-    if not apify_token:
-        logger.warning("No APIFY_API_TOKEN — cannot fall back to Apify")
-        return []
+    if isinstance(fb_cookies, list):
+        _check_cookie_expiry(fb_cookies)
 
     try:
         from apify_client import ApifyClient
@@ -116,28 +88,33 @@ def scrape_facebook(
         logger.error("apify-client not installed. Run: pip install apify-client")
         return []
 
-    client = ApifyClient(apify_token)
+    city_slug = location.lower().replace(" ", "").replace(",", "")
     search_urls = _build_search_urls(city_slug, keywords, min_price, max_price, radius_miles)
     run_input = _build_run_input(search_urls, fb_cookies)
-    logger.info(f"Triggering Apify FB Marketplace scrape — {len(search_urls)} URL(s)")
+    logger.info(f"FB Marketplace: Apify actor {APIFY_ACTOR_ID} — {len(search_urls)} URL(s)")
 
+    client = ApifyClient(apify_token)
     items = None
     last_error = None
+
     for attempt in range(1 + _MAX_RUN_RETRIES):
         if attempt > 0:
             delay = _RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)]
             logger.warning(f"FB Apify retry {attempt}/{_MAX_RUN_RETRIES} — waiting {delay}s")
             time.sleep(delay)
         try:
-            run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input, timeout_secs=360)
+            run = client.actor(APIFY_ACTOR_ID).call(run_input=run_input, timeout_secs=480)
             run_status = run.get("status", "UNKNOWN")
             logger.info(f"Apify run status: {run_status} (id={run.get('id','?')}, attempt={attempt+1})")
-            if run_status not in ("SUCCEEDED", "RUNNING"):
-                last_error = f"status={run_status}"; continue
+            # TIMED-OUT is acceptable — dataset will have partial results
+            if run_status not in ("SUCCEEDED", "TIMED-OUT"):
+                last_error = f"status={run_status}"
+                continue
             candidate_items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
             logger.info(f"Apify returned {len(candidate_items)} FB items")
             if _all_blocked(candidate_items):
-                last_error = "BLOCKED"; continue
+                last_error = "BLOCKED"
+                continue
             items = candidate_items
             break
         except Exception as e:
@@ -145,11 +122,11 @@ def scrape_facebook(
             logger.warning(f"Apify FB call failed (attempt {attempt+1}): {e}")
 
     if items is None:
-        logger.error(f"FB Marketplace: all methods failed. Last error: {last_error}")
+        logger.error(f"FB Marketplace: scrape failed. Last error: {last_error}")
         return []
 
     listings = _parse_items(items, location, max_mileage, seen_ids)
-    logger.info(f"Facebook Marketplace: {len(listings)} listings (via Apify fallback)")
+    logger.info(f"Facebook Marketplace: {len(listings)} listings parsed")
     return listings
 
 
@@ -255,12 +232,23 @@ def _build_search_urls(
     }]
 
 
-def _cookies_to_header_string(fb_cookies: list) -> str:
-    """Convert JSON cookie array to 'name=value; name=value' header string for curious_coder actor."""
+def _cookies_to_header_string(fb_cookies) -> str:
+    """
+    Convert FB cookies to 'name=value; name=value' header string for curious_coder actor.
+    Accepts: list of dicts, JSON string of list, or already-formatted header string.
+    """
+    import json as _json
     if not fb_cookies:
         return ""
+    # If string, try to parse as JSON array first
     if isinstance(fb_cookies, str):
-        return fb_cookies  # already a header string
+        clean = fb_cookies.strip().strip("'")
+        try:
+            fb_cookies = _json.loads(clean)
+        except Exception:
+            return clean  # already a header string like "c_user=...; xs=..."
+    if not isinstance(fb_cookies, list):
+        return ""
     parts = []
     for c in fb_cookies:
         name = c.get("name", "")
@@ -352,10 +340,24 @@ def _parse_items(
             continue
 
         # ── Price ────────────────────────────────────────────────────────────
+        # listing_price.amount is a decimal string like "4800.00" (cents * 100 / 100)
+        # listing_price.amount_with_offset is integer cents like "480000"
+        # listing_price.formatted_amount is "$4,800" — most reliable
         price_obj = item.get("listing_price") or {}
         price = None
         if isinstance(price_obj, dict):
-            price = _parse_fb_price(str(price_obj.get("amount") or price_obj.get("formatted_amount", "")))
+            # Prefer formatted_amount ($4,800) — strip non-digits
+            fmt = price_obj.get("formatted_amount", "")
+            if fmt:
+                price = _parse_fb_price(fmt)
+            # Fallback: amount is a decimal like "4800.00" → parse as float
+            if not price:
+                amt = price_obj.get("amount")
+                if amt:
+                    try:
+                        price = int(float(amt))
+                    except (ValueError, TypeError):
+                        pass
         if not price:
             price = _parse_fb_price(str(item.get("price", "")))
         if not price:
@@ -438,6 +440,11 @@ def _parse_items(
             model = f"{model} {trim}".strip()
         year_val = item.get("vehicle_year")
         year = int(year_val) if year_val else None
+        # Fallback: extract year from title "2007 Make Model · ..."
+        if not year and title:
+            ym = re.match(r"^(19|20)\d{2}\b", title)
+            if ym:
+                year = int(ym.group(0))
 
         # ── Contact info ─────────────────────────────────────────────────────
         seller_phone = _extract_phone(description)
