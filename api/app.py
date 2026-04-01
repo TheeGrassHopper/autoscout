@@ -498,24 +498,18 @@ def save_manual_offers(
     effective_kbb_ico = kbb_ico       or data.get("kbb_ico")
     effective_carvana = carvana_offer or data.get("carvana_offer")
 
-    # Build a KBB PriceEstimate from the KBB ICO if provided
-    price_est = None
-    if effective_kbb_ico:
-        from pricing.kbb import PriceEstimate
-        price_est = PriceEstimate(
-            source="kbb_ico_manual",
-            make=raw.make, model=raw.model, year=raw.year or 0,
-            mileage=raw.mileage or 0,
-            fair_market_value=effective_kbb_ico,
-            confidence="high",
-        )
+    # The instant offers (CarMax/KBB ICO/Carvana) are "what they'll pay YOU".
+    # The highest is the guaranteed exit price — use it as the resale target.
+    candidates = [x for x in [effective_carmax, effective_kbb_ico, effective_carvana] if x]
+    best_instant_offer = max(candidates) if candidates else None
 
     scorer = DealScorer(config={**SCORING, **MESSAGING})
     local_comp_urls = json.loads(data.get("local_market_comp_urls") or "[]")
     scored = scorer.score(
-        raw, price_est,
-        carvana_price=effective_carvana,
-        carmax_price=effective_carmax,
+        raw,
+        None,  # no KBB price estimate — instant offers are the authoritative inputs
+        carvana_price=best_instant_offer,        # best guaranteed exit price drives profit calc
+        carmax_price=None,
         local_market_price=data.get("local_market_value"),
         local_market_comp_urls=local_comp_urls,
     )
