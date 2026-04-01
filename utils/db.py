@@ -112,6 +112,8 @@ class Database:
                 ("fuel",                    "TEXT"),
                 ("body_type",               "TEXT"),
                 ("transmission",            "TEXT"),
+                ("carmax_offer",            "INTEGER"),   # manual instant offer from CarMax
+                ("kbb_ico",                 "INTEGER"),   # manual KBB Instant Cash Offer
             ]:
                 if not column_exists(conn, "listings", col):
                     conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
@@ -151,8 +153,9 @@ class Database:
                      carvana_offer, carvana_offer_margin, local_market_comp_urls,
                      seller_phone, seller_email, suggested_offer,
                      cylinders, fuel, body_type, transmission,
+                     carmax_offer, kbb_ico,
                      first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(listing_id) DO UPDATE SET
                     kbb_value=excluded.kbb_value,
                     carvana_value=excluded.carvana_value,
@@ -175,6 +178,8 @@ class Database:
                     fuel=excluded.fuel,
                     body_type=excluded.body_type,
                     transmission=excluded.transmission,
+                    carmax_offer=COALESCE(excluded.carmax_offer, listings.carmax_offer),
+                    kbb_ico=COALESCE(excluded.kbb_ico, listings.kbb_ico),
                     last_seen=excluded.last_seen
             """, (
                 scored_listing.listing_id,
@@ -211,6 +216,8 @@ class Database:
                 getattr(scored_listing, "fuel", "") or None,
                 getattr(scored_listing, "body_type", "") or None,
                 getattr(scored_listing, "transmission", "") or None,
+                getattr(scored_listing, "carmax_offer", None),
+                getattr(scored_listing, "kbb_ico", None),
                 now, now,
             ))
 
@@ -318,6 +325,25 @@ class Database:
         if count:
             logger.info(f"Purged {count} stale listings older than {max_age_days} days")
         return count
+
+    def save_manual_offers(self, listing_id: str,
+                           carmax_offer: Optional[int],
+                           kbb_ico: Optional[int],
+                           carvana_offer: Optional[int]) -> bool:
+        """
+        Persist manually entered instant offers for a listing.
+        Returns True if the listing exists, False if not found.
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE listings SET
+                    carmax_offer   = COALESCE(?, carmax_offer),
+                    kbb_ico        = COALESCE(?, kbb_ico),
+                    carvana_offer  = COALESCE(?, carvana_offer)
+                   WHERE listing_id = ?""",
+                (carmax_offer, kbb_ico, carvana_offer, listing_id),
+            )
+        return cur.rowcount > 0
 
     def get_all_listing_ids(self) -> set[str]:
         """Return all listing_ids currently in the DB (for TICKET-006 skip logic)."""

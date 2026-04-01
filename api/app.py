@@ -432,6 +432,110 @@ def remove_favorite(listing_id: str):
 
 # ── Carvana Offer Automation ──────────────────────────────────────────────────
 
+@app.post("/api/deals/{listing_id}/manual-offers")
+def save_manual_offers(
+    listing_id: str,
+    carmax_offer: Optional[int] = None,
+    kbb_ico: Optional[int] = None,
+    carvana_offer: Optional[int] = None,
+):
+    """
+    Save manually entered instant offer values (CarMax, KBB ICO, Carvana) for a listing
+    and re-score it using those real offers as price inputs.
+
+    Only provided values are updated — pass only the ones you have.
+    Returns the updated deal with the new score.
+    """
+    if not _db_exists():
+        raise HTTPException(404, "No database yet")
+
+    # Persist the raw offer values
+    from utils.db import Database as _Database
+    db = _Database(db_path=DB_PATH)
+    found = db.save_manual_offers(listing_id, carmax_offer, kbb_ico, carvana_offer)
+    if not found:
+        raise HTTPException(404, "Listing not found")
+
+    # Re-score using the new offer values as price inputs
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM listings WHERE listing_id=?", (listing_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Listing not found after update")
+
+    data = dict(row)
+
+    # Build a minimal RawListing-like object for the scorer
+    from scrapers.craigslist import RawListing
+    from scoring.engine import DealScorer
+    from config import SCORING, MESSAGING
+
+    raw = RawListing(
+        listing_id=data["listing_id"],
+        source=data.get("source", ""),
+        url=data.get("url", ""),
+        title=data.get("title", ""),
+        price=data.get("asking_price"),
+        location=data.get("location", ""),
+        posted_date=data.get("posted_date", ""),
+        description="",
+        image_urls=json.loads(data.get("image_urls") or "[]"),
+        year=data.get("year"),
+        make=data.get("make", ""),
+        model=data.get("model", ""),
+        mileage=data.get("mileage"),
+        transmission=data.get("transmission", ""),
+        title_status=data.get("title_status", ""),
+        vin=data.get("vin", ""),
+        seller_phone=data.get("seller_phone", ""),
+        seller_email=data.get("seller_email", ""),
+        cylinders=data.get("cylinders", ""),
+        fuel=data.get("fuel", ""),
+        body_type=data.get("body_type", ""),
+    )
+
+    # Manual offers take priority: use whichever offer values we now have (fresh or stored)
+    effective_carmax  = carmax_offer  or data.get("carmax_offer")
+    effective_kbb_ico = kbb_ico       or data.get("kbb_ico")
+    effective_carvana = carvana_offer or data.get("carvana_offer")
+
+    # Build a KBB PriceEstimate from the KBB ICO if provided
+    price_est = None
+    if effective_kbb_ico:
+        from pricing.kbb import PriceEstimate
+        price_est = PriceEstimate(
+            source="kbb_ico_manual",
+            make=raw.make, model=raw.model, year=raw.year or 0,
+            mileage=raw.mileage or 0,
+            fair_market_value=effective_kbb_ico,
+            confidence="high",
+        )
+
+    scorer = DealScorer(config={**SCORING, **MESSAGING})
+    local_comp_urls = json.loads(data.get("local_market_comp_urls") or "[]")
+    scored = scorer.score(
+        raw, price_est,
+        carvana_price=effective_carvana,
+        carmax_price=effective_carmax,
+        local_market_price=data.get("local_market_value"),
+        local_market_comp_urls=local_comp_urls,
+    )
+
+    # Preserve existing offer fields that scorer doesn't set
+    scored.carvana_offer = effective_carvana
+    scored.carmax_offer  = effective_carmax  # type: ignore[attr-defined]
+    scored.kbb_ico       = effective_kbb_ico  # type: ignore[attr-defined]
+
+    db.upsert_listing(scored)
+
+    # Return the refreshed row
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM listings WHERE listing_id=?", (listing_id,)).fetchone()
+    result = dict(row)
+    result["image_urls"] = json.loads(result.get("image_urls") or "[]")
+    result["local_market_comp_urls"] = json.loads(result.get("local_market_comp_urls") or "[]")
+    return result
+
+
 @app.post("/api/deals/{listing_id}/carvana-offer")
 def start_carvana_offer(listing_id: str, background_tasks: BackgroundTasks,
                         vin: Optional[str] = None, user_id: Optional[int] = None):
