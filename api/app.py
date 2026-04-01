@@ -137,6 +137,7 @@ def _make_pipeline_slot() -> dict:
         "last_run": None,
         "last_count": 0,
         "logs": queue.Queue(maxsize=500),
+        "log_lines": [],   # captured for persistent run history
         "start_time": None,
         "stop_requested": False,
     }
@@ -248,6 +249,38 @@ def _ensure_fav_schema():
         """)
 
 _ensure_fav_schema()
+
+
+def _ensure_runs_schema():
+    """Create pipeline_runs table in the main DB if it doesn't exist."""
+    _PK = "BIGSERIAL PRIMARY KEY" if IS_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    try:
+        with _db() as conn:
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS pipeline_runs (
+                    id               {_PK},
+                    user_key         TEXT,
+                    started_at       TEXT,
+                    finished_at      TEXT,
+                    duration_seconds INTEGER,
+                    query            TEXT,
+                    dry_run          INTEGER DEFAULT 0,
+                    listing_count    INTEGER DEFAULT 0,
+                    great_count      INTEGER DEFAULT 0,
+                    fair_count       INTEGER DEFAULT 0,
+                    status           TEXT DEFAULT 'running',
+                    log_text         TEXT,
+                    zip_code         TEXT,
+                    radius_miles     INTEGER DEFAULT 0
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_started ON pipeline_runs(started_at DESC)"
+            )
+    except Exception:
+        logger.warning("Could not create pipeline_runs table (DB may not exist yet)")
+
+_ensure_runs_schema()
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -725,6 +758,43 @@ def stop_pipeline(request: Request):
     return {"status": "stop_requested"}
 
 
+# ── Run History ───────────────────────────────────────────────────────────────
+
+@app.get("/api/runs")
+def get_runs(limit: int = 50):
+    """Return recent pipeline runs (newest first), without log_text for speed."""
+    try:
+        with _db() as conn:
+            rows = conn.execute(
+                "SELECT id, user_key, started_at, finished_at, duration_seconds, "
+                "query, dry_run, listing_count, great_count, fair_count, "
+                "status, zip_code, radius_miles "
+                "FROM pipeline_runs ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+@app.get("/api/runs/{run_id}/logs")
+def get_run_logs(run_id: int):
+    """Return the full captured log text for a specific run."""
+    try:
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT id, started_at, status, log_text FROM pipeline_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(404, "Run not found")
+        return dict(row)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(500, "Failed to fetch run logs")
+
+
 @app.post("/api/pipeline/run")
 def run_pipeline_endpoint(
     request: Request,
@@ -765,10 +835,15 @@ def _run_pipeline_bg(pipeline_key: str, query: str = "", dry_run: bool = True,
                      include_facebook: bool = True, min_year: int = 0, max_year: int = 0,
                      max_price: int = 0, max_mileage: int = 0):
     p = _get_pipeline(pipeline_key)
-    handler = _QueueLogHandler(p["logs"])
+    p["log_lines"] = []   # reset for this run
+    handler = _QueueLogHandler(p["logs"], p["log_lines"])
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s — %(message)s", "%H:%M:%S"))
     root = logging.getLogger()
     root.addHandler(handler)
+
+    started_at = p["start_time"] or datetime.now().isoformat()
+    run_status = "completed"
+    listing_count = 0
 
     try:
         import asyncio
@@ -781,28 +856,76 @@ def _run_pipeline_bg(pipeline_key: str, query: str = "", dry_run: bool = True,
             min_year=min_year or None, max_year=max_year or None,
             max_price=max_price or None, max_mileage=max_mileage or None,
         ))
-        p["last_count"] = len(results)
-        msg = f"⛔ Pipeline stopped — {len(results)} listings processed" if p["stop_requested"] \
-              else f"✅ Pipeline complete — {len(results)} listings processed"
+        listing_count = len(results)
+        p["last_count"] = listing_count
+        if p["stop_requested"]:
+            run_status = "stopped"
+            msg = f"⛔ Pipeline stopped — {listing_count} listings processed"
+        else:
+            msg = f"✅ Pipeline complete — {listing_count} listings processed"
         p["logs"].put(msg)
+        p["log_lines"].append(msg)
     except Exception as e:
-        p["logs"].put(f"❌ Pipeline error: {e}")
+        run_status = "error"
+        msg = f"❌ Pipeline error: {e}"
+        p["logs"].put(msg)
+        p["log_lines"].append(msg)
         logging.exception("Pipeline background task failed")
     finally:
         root.removeHandler(handler)
+        finished_at = datetime.now().isoformat()
+        elapsed = int((datetime.fromisoformat(finished_at) - datetime.fromisoformat(started_at)).total_seconds())
+
+        # Count deal classes from the DB for this run summary
+        great_count = fair_count = 0
+        try:
+            with _db() as conn:
+                row = conn.execute(
+                    "SELECT "
+                    "SUM(CASE WHEN deal_class='great' THEN 1 ELSE 0 END) AS g, "
+                    "SUM(CASE WHEN deal_class='fair'  THEN 1 ELSE 0 END) AS f "
+                    "FROM listings"
+                ).fetchone()
+                if row:
+                    great_count = row["g"] or 0
+                    fair_count  = row["f"] or 0
+        except Exception:
+            pass
+
+        # Persist the run record
+        try:
+            log_text = "\n".join(p["log_lines"])
+            with _db() as conn:
+                conn.execute(
+                    "INSERT INTO pipeline_runs "
+                    "(user_key, started_at, finished_at, duration_seconds, query, dry_run, "
+                    " listing_count, great_count, fair_count, status, log_text, zip_code, radius_miles) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (pipeline_key, started_at, finished_at, elapsed,
+                     query or "", 1 if dry_run else 0,
+                     listing_count, great_count, fair_count,
+                     run_status, log_text, zip_code or "", radius_miles or 0),
+                )
+        except Exception:
+            logger.exception("Failed to save pipeline run record")
+
         p["running"] = False
         p["start_time"] = None
         p["stop_requested"] = False
 
 
 class _QueueLogHandler(logging.Handler):
-    def __init__(self, q: queue.Queue):
+    def __init__(self, q: queue.Queue, lines: list | None = None):
         super().__init__()
         self.q = q
+        self.lines = lines  # optional list for persistent capture
 
     def emit(self, record):
         try:
-            self.q.put_nowait(self.format(record))
+            formatted = self.format(record)
+            self.q.put_nowait(formatted)
+            if self.lines is not None:
+                self.lines.append(formatted)
         except queue.Full:
             pass
 

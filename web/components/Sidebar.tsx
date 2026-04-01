@@ -12,6 +12,7 @@ const baseNav = [
   { href: "/market",   label: "Market",    icon: "📊" },
   { href: "/searches", label: "Searches",  icon: "🔍" },
   { href: "/messages", label: "Outreach",  icon: "✉️" },
+  { href: "/runs",     label: "Run Logs",  icon: "📋" },
   { href: "/profile",  label: "Profile",   icon: "👤" },
 ];
 

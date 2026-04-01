@@ -255,6 +255,43 @@ export async function getCarscomIntelStatus(listingId: string): Promise<CarscomI
   return res.json();
 }
 
+// ── Run History ───────────────────────────────────────────────────────────────
+
+export interface PipelineRun {
+  id: number;
+  user_key: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  query: string;
+  dry_run: number;
+  listing_count: number;
+  great_count: number;
+  fair_count: number;
+  status: "completed" | "stopped" | "error" | "running";
+  zip_code: string;
+  radius_miles: number;
+}
+
+export interface PipelineRunLogs {
+  id: number;
+  started_at: string;
+  status: string;
+  log_text: string;
+}
+
+export async function getRuns(limit = 50): Promise<PipelineRun[]> {
+  const res = await authedFetch(`${BASE}/api/runs?limit=${limit}`, { cache: "no-store" });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getRunLogs(runId: number): Promise<PipelineRunLogs> {
+  const res = await authedFetch(`${BASE}/api/runs/${runId}/logs`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch run logs");
+  return res.json();
+}
+
 export interface RunFilters {
   minYear?: number;
   maxYear?: number;
