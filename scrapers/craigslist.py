@@ -172,13 +172,16 @@ def _extract_contact_from_reply(page, description: str) -> tuple[str, str]:
         # Click the reply button to reveal .cl-reply-flap
         reply_btn = page.locator("#replylink, .reply-button-link, button[data-href*='reply']").first
         if not reply_btn.count():
+            logger.debug("Contact: no reply button found on %s", page.url)
             raise ValueError("no reply button found")
 
         reply_btn.click(timeout=5_000)
+        logger.debug("Contact: clicked reply button on %s", page.url)
 
         # Wait for the flap panel to become visible
         flap = page.locator(".cl-reply-flap")
         flap.first.wait_for(state="visible", timeout=6_000)
+        logger.debug("Contact: .cl-reply-flap visible on %s", page.url)
 
         # Extract phone from tel: links inside the flap (call or text)
         tel_links = flap.locator("[href^='tel:']").all()
@@ -203,8 +206,10 @@ def _extract_contact_from_reply(page, description: str) -> tuple[str, str]:
             flap_text = flap.first.inner_text()
             email = _extract_email(flap_text)
 
-    except Exception:
-        pass  # reply button missing, timeout, or flap structure changed
+        logger.debug("Contact result: phone=%s email=%s on %s", phone or "none", email or "none", page.url)
+
+    except Exception as exc:
+        logger.debug("Contact extraction failed on %s: %s", page.url, exc)
 
     # Fall back to description text mining
     if not phone:
