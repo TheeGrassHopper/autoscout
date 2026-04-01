@@ -6,7 +6,8 @@ import { type PipelineRun, type PipelineRunLogs, getRuns, getRunLogs } from "@/l
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtDate(iso: string) {
-  return new Date(iso).toLocaleString(undefined, {
+  return new Date(iso).toLocaleString("en-US", {
+    timeZone: "America/Phoenix",
     month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
