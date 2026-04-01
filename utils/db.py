@@ -293,12 +293,22 @@ class Database:
     def purge_stale_listings(self, max_age_days: int = 7) -> int:
         """
         Delete listings whose posted_date is older than max_age_days.
+        Deletes associated messages first to satisfy the FK constraint.
         Listings with no posted_date are kept (can't determine age).
-        Returns number of rows deleted.
+        Returns number of listing rows deleted.
         """
         from datetime import timedelta
         cutoff = (datetime.now() - timedelta(days=max_age_days)).isoformat()
+        stale_subquery = (
+            "SELECT listing_id FROM listings "
+            "WHERE posted_date IS NOT NULL AND posted_date != '' AND posted_date < ?"
+        )
         with self._connect() as conn:
+            # Must delete messages first — messages.listing_id FK references listings
+            conn.execute(
+                f"DELETE FROM messages WHERE listing_id IN ({stale_subquery})",
+                (cutoff,),
+            )
             cur = conn.execute(
                 "DELETE FROM listings "
                 "WHERE posted_date IS NOT NULL AND posted_date != '' AND posted_date < ?",
