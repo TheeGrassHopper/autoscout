@@ -436,6 +436,9 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     # Purge expired pricing cache rows (lightweight, run at end of each pipeline)
     db.purge_expired_price_cache()
 
+    # Purge listings older than 7 days — keeps the DB rotating with fresh listings only
+    db.purge_stale_listings(max_age_days=7)
+
     return scored_listings
 
 

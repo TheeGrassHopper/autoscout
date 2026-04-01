@@ -290,6 +290,31 @@ class Database:
                 (key, source, value, kbb_value, now.isoformat(), expires),
             )
 
+    def purge_stale_listings(self, max_age_days: int = 7) -> int:
+        """
+        Delete listings whose posted_date is older than max_age_days.
+        Listings with no posted_date are kept (can't determine age).
+        Returns number of rows deleted.
+        """
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=max_age_days)).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM listings "
+                "WHERE posted_date IS NOT NULL AND posted_date != '' AND posted_date < ?",
+                (cutoff,),
+            )
+        count = cur.rowcount
+        if count:
+            logger.info(f"Purged {count} stale listings older than {max_age_days} days")
+        return count
+
+    def get_all_listing_ids(self) -> set[str]:
+        """Return all listing_ids currently in the DB (for TICKET-006 skip logic)."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT listing_id FROM listings").fetchall()
+        return {r[0] for r in rows}
+
     def purge_expired_price_cache(self):
         """Delete expired cache rows — call occasionally to keep DB size down."""
         with self._connect() as conn:

@@ -20,14 +20,37 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlencode
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-_DETAIL_WORKERS = 2  # concurrent detail page fetches (Railway thread limit)
+_DETAIL_WORKERS = 2   # concurrent detail page fetches (Railway thread limit)
+_PAGE_SIZE = 120       # CL returns 120 listings per page
+_MAX_PAGES = 15        # safety cap: 15 × 120 = 1,800 listings max
+_MAX_LISTING_AGE_DAYS = 7  # stop paginating / purge listings older than this
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_cl_datetime(dt_str: str) -> Optional[datetime]:
+    """
+    Parse a CL <time datetime="..."> attribute into a datetime.
+    CL format: "2026-04-01 10:30"  (space-separated, no timezone, local time)
+    Also handles ISO-ish: "2026-04-01T10:30:00"
+    Returns None if unparseable.
+    """
+    if not dt_str:
+        return None
+    s = dt_str.strip()[:19]
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
 
 # VIN pattern: 17 chars, no I/O/Q, must contain both letters and digits
 _VIN_RE = re.compile(r'\b([A-HJ-NPR-Z0-9]{17})\b')
@@ -278,28 +301,54 @@ class CraigslistScraper:
     def scrape(self, query: str = "") -> list[RawListing]:
         all_listings: list[RawListing] = []
         seen_ids: set = set()
+        cutoff_dt = datetime.now() - timedelta(days=_MAX_LISTING_AGE_DAYS)
+        ua = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                )
-            )
+            context = browser.new_context(user_agent=ua)
+
             for cat in self.CATEGORIES:
-                url = self._build_url(cat, query)
-                logger.info(f"Scraping Craigslist [{cat}]: {url}")
-                try:
-                    listings = self._scrape_page(context, url)
-                    for l in listings:
-                        if l.listing_id not in seen_ids:
-                            seen_ids.add(l.listing_id)
-                            all_listings.append(l)
-                    logger.info(f"  {cat}: {len(listings)} listings found")
-                except Exception as e:
-                    logger.error(f"Craigslist [{cat}] failed: {e}")
+                for page_num in range(_MAX_PAGES):
+                    offset = page_num * _PAGE_SIZE
+                    url = self._build_url(cat, query, offset=offset)
+                    logger.info(
+                        f"Scraping CL [{cat}] page {page_num + 1}/{_MAX_PAGES} "
+                        f"(offset={offset}): {url}"
+                    )
+                    try:
+                        page_listings, reached_cutoff = self._scrape_page(
+                            context, url, cutoff_dt=cutoff_dt
+                        )
+                        added = 0
+                        for l in page_listings:
+                            if l.listing_id not in seen_ids:
+                                seen_ids.add(l.listing_id)
+                                all_listings.append(l)
+                                added += 1
+                        logger.info(
+                            f"  [{cat}] page {page_num + 1}: {added} new listings "
+                            f"(running total: {len(all_listings)})"
+                        )
+                        if reached_cutoff:
+                            logger.info(
+                                f"  [{cat}] reached {_MAX_LISTING_AGE_DAYS}-day cutoff "
+                                f"at page {page_num + 1} — stopping pagination"
+                            )
+                            break
+                        if len(page_listings) < _PAGE_SIZE:
+                            logger.info(
+                                f"  [{cat}] last page (only {len(page_listings)} listings) "
+                                f"— stopping pagination"
+                            )
+                            break
+                    except Exception as e:
+                        logger.error(f"CL [{cat}] page {page_num + 1} failed: {e}")
+                        break
 
             browser.close()
 
@@ -307,11 +356,6 @@ class CraigslistScraper:
         # and cannot share a browser across threads. Each worker launches its own
         # playwright + browser instance.
         logger.info(f"Fetching {len(all_listings)} detail pages ({_DETAIL_WORKERS} workers)...")
-        ua = (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
 
         def _detail_worker(listing: RawListing):
             with sync_playwright() as pw:
@@ -342,16 +386,25 @@ class CraigslistScraper:
         logger.info(f"Craigslist after filters: {len(filtered)}")
         return filtered
 
-    def _scrape_page(self, context, url: str) -> list[RawListing]:
+    def _scrape_page(self, context, url: str,
+                     cutoff_dt: Optional[datetime] = None) -> tuple[list[RawListing], bool]:
+        """
+        Scrape one CL search results page.
+        Returns (listings, reached_cutoff).
+        reached_cutoff=True means at least one listing was older than cutoff_dt,
+        so the caller should stop paginating.
+        Listings older than cutoff_dt are excluded from the returned list.
+        """
         page = context.new_page()
         results = []
+        reached_cutoff = False
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             try:
                 page.wait_for_selector("[data-pid]", timeout=15_000)
             except PWTimeout:
                 logger.warning(f"No listings rendered at {url}")
-                return []
+                return [], False
 
             cards = page.locator("[data-pid]")
             total = cards.count()
@@ -360,13 +413,20 @@ class CraigslistScraper:
             for i in range(total):
                 try:
                     listing = self._parse_card(cards.nth(i))
-                    if listing:
-                        results.append(listing)
+                    if not listing:
+                        continue
+                    # Age filter: skip listings older than cutoff
+                    if cutoff_dt and listing.posted_date:
+                        listing_dt = _parse_cl_datetime(listing.posted_date)
+                        if listing_dt and listing_dt < cutoff_dt:
+                            reached_cutoff = True
+                            continue  # skip this listing, but check rest of page
+                    results.append(listing)
                 except Exception as e:
                     logger.debug(f"Card {i} parse error: {e}")
         finally:
             page.close()
-        return results
+        return results, reached_cutoff
 
     def _parse_card(self, card) -> Optional[RawListing]:
         pid = card.get_attribute("data-pid") or ""
@@ -399,10 +459,18 @@ class CraigslistScraper:
                     val *= 1000
                 mileage = val
 
-        # Posted date — dedicated span inside .meta
+        # Posted date — read the <time datetime="YYYY-MM-DD HH:MM"> attribute for an
+        # exact timestamp. The inner text is a relative string ("20 min ago") which
+        # we can't reliably parse; the datetime attribute is always machine-readable.
         date_el = card.locator(".result-posted-date")
         if date_el.count():
-            posted_date = date_el.first.inner_text().strip()
+            # .result-posted-date may itself be a <time> or wrap one
+            dt_attr = date_el.first.get_attribute("datetime")
+            if not dt_attr:
+                time_child = date_el.locator("time")
+                if time_child.count():
+                    dt_attr = time_child.first.get_attribute("datetime")
+            posted_date = dt_attr or date_el.first.inner_text().strip()
 
         loc_el = card.locator(".result-location")
         if loc_el.count():
@@ -423,8 +491,14 @@ class CraigslistScraper:
         self._parse_title_status(listing)
         return listing
 
-    def _build_url(self, category: str, query: str = "") -> str:
-        params: dict = {"hasPic": "1"}
+    def _build_url(self, category: str, query: str = "", offset: int = 0) -> str:
+        params: dict = {
+            "hasPic": "1",
+            "sort": "date",       # newest listings first
+            "purveyor": "owner",  # private sellers only
+        }
+        if offset:
+            params["s"] = offset  # CL pagination: s=0, s=120, s=240, ...
         if query:
             params["query"] = query
         if self.config.get("min_price"):
@@ -436,7 +510,7 @@ class CraigslistScraper:
         if self.config.get("max_year"):
             params["max_auto_year"] = self.config["max_year"]
         if self.config.get("max_mileage"):
-            params["auto_miles_max"] = self.config["max_mileage"]
+            params["max_auto_miles"] = self.config["max_mileage"]  # fixed param name
         if self.config.get("search_radius_miles"):
             params["search_distance"] = self.config["search_radius_miles"]
         if self.config.get("zip_code"):
