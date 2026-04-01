@@ -33,6 +33,9 @@ export interface Deal {
   kbb_value: number;
   carvana_value: number | null;
   carmax_value: number | null;
+  carmax_offer: number | null;
+  kbb_ico: number | null;
+  carvana_offer: number | null;
   local_market_value: number | null;
   local_market_comp_urls?: string[];
   blended_market_value: number | null;
@@ -135,6 +138,25 @@ export interface CarvanaOfferStatus {
   offer: string | null;
   error: string | null;
   steps: string[];
+}
+
+export interface ManualOffers {
+  carmax_offer?: number | null;
+  kbb_ico?: number | null;
+  carvana_offer?: number | null;
+}
+
+export async function submitManualOffers(listingId: string, offers: ManualOffers): Promise<Deal> {
+  const params = new URLSearchParams();
+  if (offers.carmax_offer)  params.set("carmax_offer",  String(offers.carmax_offer));
+  if (offers.kbb_ico)       params.set("kbb_ico",       String(offers.kbb_ico));
+  if (offers.carvana_offer) params.set("carvana_offer", String(offers.carvana_offer));
+  const res = await authedFetch(
+    `${BASE}/api/deals/${listingId}/manual-offers?${params}`,
+    { method: "POST" }
+  );
+  if (!res.ok) throw new Error("Failed to save offers");
+  return res.json();
 }
 
 export async function startCarvanaOffer(listingId: string, vin?: string): Promise<void> {

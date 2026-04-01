@@ -22,8 +22,10 @@ import {
   getCarscomIntelStatus,
   startCarmaxOffer,
   getCarmaxOfferStatus,
+  submitManualOffers,
   draftMessage,
   type DraftedMessage,
+  type ManualOffers,
 } from "@/lib/api";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -831,7 +833,104 @@ function OverviewTab({ deal }: { deal: Deal }) {
   );
 }
 
-function ValuationTab({ deal }: { deal: Deal }) {
+// ── Instant Offers Section ────────────────────────────────────────────────────
+
+function InstantOffersSection({ deal, onRescore }: { deal: Deal; onRescore: (updated: Deal) => void }) {
+  const [carmax, setCarmax] = useState(deal.carmax_offer ? String(deal.carmax_offer) : "");
+  const [kbb, setKbb]       = useState(deal.kbb_ico      ? String(deal.kbb_ico)      : "");
+  const [carvana, setCarvana] = useState(deal.carvana_offer ? String(deal.carvana_offer) : "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved]   = useState(false);
+  const [error, setError]   = useState<string | null>(null);
+
+  const parseOffer = (s: string) => {
+    const n = parseInt(s.replace(/[^0-9]/g, ""), 10);
+    return isNaN(n) || n <= 0 ? null : n;
+  };
+
+  const hasAny = !!(carmax || kbb || carvana);
+
+  const handleRescore = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const offers: ManualOffers = {
+        carmax_offer:  parseOffer(carmax)  ?? undefined,
+        kbb_ico:       parseOffer(kbb)     ?? undefined,
+        carvana_offer: parseOffer(carvana) ?? undefined,
+      };
+      const updated = await submitManualOffers(deal.listing_id, offers);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+      onRescore(updated);
+    } catch {
+      setError("Failed to save — try again");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <div className="text-xs font-bold text-slate-800">Instant Offers</div>
+          <div className="text-xs text-slate-400 mt-0.5">
+            Paste real offers from CarMax, KBB or Carvana — we&apos;ll re-score the deal
+          </div>
+        </div>
+      </div>
+
+      <div className="p-4 space-y-3">
+        {/* Input row for each source */}
+        {[
+          { label: "CarMax", icon: "🟥", href: "https://www.carmax.com/sell-my-car/offers/", value: carmax, set: setCarmax, placeholder: "e.g. 14500" },
+          { label: "KBB ICO", icon: "🔵", href: "https://www.kbb.com/instant-cash-offer/offer/", value: kbb, set: setKbb, placeholder: "e.g. 13800" },
+          { label: "Carvana", icon: "🟢", href: "https://www.carvana.com/sell-my-car/offer/token/", value: carvana, set: setCarvana, placeholder: "e.g. 15200" },
+        ].map(({ label, icon, href, value, set, placeholder }) => (
+          <div key={label} className="flex items-center gap-2">
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 w-28 flex-shrink-0 text-xs font-medium text-slate-600 hover:text-blue-600 transition-colors"
+              title={`Open ${label} →`}
+            >
+              <span>{icon}</span>
+              <span>{label}</span>
+              <svg className="w-2.5 h-2.5 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
+            <div className="relative flex-1">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">$</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={value}
+                onChange={(e) => set(e.target.value)}
+                placeholder={placeholder}
+                className="w-full pl-6 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
+              />
+            </div>
+          </div>
+        ))}
+
+        {error && <p className="text-xs text-red-500">{error}</p>}
+
+        <button
+          onClick={handleRescore}
+          disabled={!hasAny || saving}
+          className="w-full py-2.5 text-sm font-semibold rounded-lg transition-colors disabled:opacity-40
+            bg-slate-900 text-white hover:bg-slate-700 disabled:cursor-not-allowed"
+        >
+          {saving ? "Saving…" : saved ? "✓ Saved & Re-scored" : "Re-score with These Offers"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ValuationTab({ deal, onDealUpdate }: { deal: Deal; onDealUpdate?: (updated: Deal) => void }) {
   const reference = deal.blended_market_value ?? deal.kbb_value;
   const savings = deal.savings ?? (reference ? reference - deal.asking_price : null);
 
@@ -931,6 +1030,9 @@ function ValuationTab({ deal }: { deal: Deal }) {
         <div>First seen: {deal.first_seen ? new Date(deal.first_seen).toLocaleString() : "—"}</div>
         <div>ID: <span className="font-mono">{deal.listing_id}</span></div>
       </div>
+
+      {/* Instant Offers */}
+      <InstantOffersSection deal={deal} onRescore={onDealUpdate ?? (() => {})} />
     </div>
   );
 }
@@ -1027,7 +1129,12 @@ function MessageTab({ deal }: { deal: Deal }) {
 
 // ── Deal Panel (replaces DealDrawer) ─────────────────────────────────────────
 
-function DealPanel({ deal, onClose, embedded }: { deal: Deal; onClose: () => void; embedded?: boolean }) {
+function DealPanel({ deal, onClose, embedded, onDealUpdate }: {
+  deal: Deal;
+  onClose: () => void;
+  embedded?: boolean;
+  onDealUpdate?: (updated: Deal) => void;
+}) {
   const [tab, setTab] = useState<DetailTab>("overview");
 
   const TABS: { key: DetailTab; label: string }[] = [
@@ -1106,7 +1213,7 @@ function DealPanel({ deal, onClose, embedded }: { deal: Deal; onClose: () => voi
         </div>
         {/* Valuation: allows scroll for content */}
         <div className={`absolute inset-0 overflow-y-auto ${tab === "valuation" ? "" : "hidden"}`}>
-          <ValuationTab deal={deal} />
+          <ValuationTab deal={deal} onDealUpdate={onDealUpdate} />
         </div>
         {/* Message: outreach draft */}
         <div className={`absolute inset-0 overflow-y-auto ${tab === "message" ? "" : "hidden"}`}>
@@ -1581,11 +1688,11 @@ export default function DealsPage() {
             <>
               {/* Desktop embedded panel */}
               <div className="hidden lg:flex lg:flex-col h-full">
-                <DealPanel deal={selected} onClose={() => setSelected(null)} embedded />
+                <DealPanel deal={selected} onClose={() => setSelected(null)} embedded onDealUpdate={(updated) => setSelected(updated)} />
               </div>
               {/* Mobile: full-screen (not overlay) */}
               <div className="flex flex-col h-full lg:hidden">
-                <DealPanel deal={selected} onClose={() => setSelected(null)} />
+                <DealPanel deal={selected} onClose={() => setSelected(null)} onDealUpdate={(updated) => setSelected(updated)} />
               </div>
             </>
           ) : (
