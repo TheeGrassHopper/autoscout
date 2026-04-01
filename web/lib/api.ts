@@ -63,28 +63,6 @@ export interface Stats {
   great_deals: number;
   fair_deals: number;
   poor_deals: number;
-  messages_queued: number;
-  messages_approved: number;
-}
-
-export interface QueuedMessage {
-  id: number;
-  listing_id: string;
-  message_text: string;
-  drafted_at: string;
-  status: string;
-  title: string;
-  url: string;
-  asking_price: number;
-  kbb_value: number;
-  savings: number;
-  total_score: number;
-  deal_class: DealClass;
-  make: string;
-  model: string;
-  year: number;
-  mileage: number;
-  location: string;
 }
 
 export interface PipelineStatus {
@@ -109,19 +87,6 @@ export async function getDeals(dealClass?: string): Promise<Deal[]> {
   const params = dealClass ? `?deal_class=${dealClass}` : "";
   const res = await fetch(`${BASE}/api/deals${params}`, { cache: "no-store", headers: authHeaders() });
   return res.json();
-}
-
-export async function getMessageQueue(): Promise<QueuedMessage[]> {
-  const res = await fetch(`${BASE}/api/messages/queue`, { cache: "no-store", headers: authHeaders() });
-  return res.json();
-}
-
-export async function approveMessage(id: number): Promise<void> {
-  await fetch(`${BASE}/api/messages/${id}/approve`, { method: "POST", headers: authHeaders() });
-}
-
-export async function skipMessage(id: number): Promise<void> {
-  await fetch(`${BASE}/api/messages/${id}/skip`, { method: "POST", headers: authHeaders() });
 }
 
 export interface DraftedMessage {

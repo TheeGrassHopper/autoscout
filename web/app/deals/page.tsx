@@ -23,8 +23,6 @@ import {
   startCarmaxOffer,
   getCarmaxOfferStatus,
   draftMessage,
-  approveMessage,
-  skipMessage,
   type DraftedMessage,
 } from "@/lib/api";
 
@@ -925,12 +923,10 @@ function MessageTab({ deal }: { deal: Deal }) {
   const [draft, setDraft] = useState<DraftedMessage | null>(null);
   const [text, setText] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [actionDone, setActionDone] = useState<"approved" | "skipped" | null>(null);
   const [copied, setCopied] = useState(false);
 
   const generate = async () => {
     setGenerating(true);
-    setActionDone(null);
     try {
       const msg = await draftMessage(deal.listing_id);
       setDraft(msg);
@@ -939,48 +935,11 @@ function MessageTab({ deal }: { deal: Deal }) {
     setGenerating(false);
   };
 
-  const handleApprove = async () => {
-    if (!draft) return;
-    await approveMessage(draft.id);
-    setActionDone("approved");
-  };
-
-  const handleSkip = async () => {
-    if (!draft) return;
-    await skipMessage(draft.id);
-    setActionDone("skipped");
-  };
-
   const handleCopy = () => {
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
-
-  if (actionDone) {
-    return (
-      <div className="p-6 flex flex-col items-center justify-center gap-3 text-center">
-        {actionDone === "approved" ? (
-          <>
-            <div className="text-3xl">✅</div>
-            <div className="text-sm font-semibold text-slate-700">Message approved</div>
-            <div className="text-xs text-slate-400">Moved to your Outreach Hub queue.</div>
-          </>
-        ) : (
-          <>
-            <div className="text-3xl">🚫</div>
-            <div className="text-sm font-semibold text-slate-500">Message skipped</div>
-          </>
-        )}
-        <button
-          onClick={() => { setActionDone(null); setDraft(null); setText(""); }}
-          className="mt-2 text-xs text-blue-600 hover:underline"
-        >
-          Generate a new draft
-        </button>
-      </div>
-    );
-  }
 
   if (!draft) {
     return (
@@ -1033,19 +992,7 @@ function MessageTab({ deal }: { deal: Deal }) {
           onClick={handleCopy}
           className="flex-1 py-2.5 text-xs font-semibold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
         >
-          {copied ? "Copied ✓" : "Copy"}
-        </button>
-        <button
-          onClick={handleSkip}
-          className="flex-1 py-2.5 text-xs font-semibold rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 transition-colors"
-        >
-          Skip
-        </button>
-        <button
-          onClick={handleApprove}
-          className="flex-1 py-2.5 text-xs font-semibold rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
-        >
-          Approve ✓
+          {copied ? "Copied ✓" : "Copy Message"}
         </button>
       </div>
 

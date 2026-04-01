@@ -60,8 +60,6 @@ from pricing.vinaudit import get_vinaudit_price
 from pricing.kbb_apify import get_kbb_apify_price
 from pricing.carsxe import get_carsxe_price
 from scoring.engine import DealScorer, ScoredListing, sort_listings, print_summary
-from messaging.drafter import MessageDrafter
-from messaging.sender import MessageSender
 from utils.db import Database
 from utils.notifier import Notifier
 
@@ -418,48 +416,11 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     scored_listings = sort_listings(scored_listings)
 
     if stop_check and stop_check():
-        logger.info("Stop requested before messaging — halting pipeline")
+        logger.info("Stop requested — halting pipeline")
         return scored_listings
 
-    # ── Step 4: Draft messages ────────────────────────────────────────────────
-    logger.info("STEP 4 — Drafting messages for deals")
-
-    drafter = MessageDrafter(use_claude=bool(anthropic_key))
-
-    great_deals = [l for l in scored_listings if l.is_great_deal]
-    fair_deals = [l for l in scored_listings if l.is_fair_deal]
-    actionable = great_deals + fair_deals
-
-    for listing in actionable:
-        listing.message_draft = drafter.draft(listing)
-        db.log_message(listing.listing_id, listing.message_draft)
-
-    logger.info(f"Messages drafted: {len(actionable)}")
-
-    # ── Step 5: Queue/send messages ───────────────────────────────────────────
-    if not dry_run:
-        logger.info("STEP 5 — Processing messages")
-
-        sender = MessageSender(
-            db=db,
-            auto_send=MESSAGING.get("auto_send_great_deals", False),
-            output_dir="output",
-        )
-        notifier = Notifier()
-
-        for listing in great_deals:
-            sender.process(listing)
-            if NOTIFICATIONS.get("sms_on_great_deal"):
-                notifier.alert_great_deal(listing)
-
-        if MESSAGING.get("require_approval_fair_deals"):
-            for listing in fair_deals[:5]:  # Cap at 5 fair deals for review
-                sender.process(listing)
-    else:
-        logger.info("STEP 5 — Dry run: skipping message sending")
-
-    # ── Step 6: Export CSV ────────────────────────────────────────────────────
-    logger.info("STEP 6 — Exporting results")
+    # ── Step 4: Export CSV ────────────────────────────────────────────────────
+    logger.info("STEP 4 — Exporting results")
     export_csv(scored_listings)
 
     # ── Summary ───────────────────────────────────────────────────────────────

@@ -149,15 +149,20 @@ function TopDealSpotlight({ deal }: { deal: Deal | null }) {
         >
           View Deal →
         </Link>
-        <Link
-          href="/messages"
-          className="flex-1 text-center px-4 py-2 text-sm border border-gray-200 text-slate-600 font-medium rounded-lg hover:bg-gray-50 transition-colors"
-        >
-          Draft Message
-        </Link>
       </div>
     </div>
   );
+}
+
+// ── Log Line ──────────────────────────────────────────────────────────────────
+
+function LogLine({ line }: { line: string }) {
+  let color = "text-slate-300";
+  if (/ERROR|❌/.test(line))        color = "text-red-400";
+  else if (/WARNING/.test(line))     color = "text-amber-400";
+  else if (/✅|complete/i.test(line)) color = "text-emerald-400";
+  else if (/⛔|stopped/i.test(line))  color = "text-amber-400";
+  return <div className={`${color} leading-relaxed whitespace-pre-wrap break-all`}>{line}</div>;
 }
 
 // ── Pipeline Panel ────────────────────────────────────────────────────────────
@@ -185,7 +190,9 @@ function PipelinePanel() {
   const [maxMileage, setMaxMileage] = useState("190000");
   const [logs, setLogs] = useState<string[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const logsRef = useRef<HTMLDivElement>(null);
+  const prevRunning = useRef(false);
 
   useEffect(() => {
     const refresh = async () => {
@@ -198,7 +205,14 @@ function PipelinePanel() {
   }, [status.running]);
 
   useEffect(() => {
-    if (!status.running) return;
+    if (!status.running) {
+      prevRunning.current = false;
+      return;
+    }
+    // If we arrived at the page while already running, show reconnect notice
+    if (!prevRunning.current) setReconnecting(true);
+    prevRunning.current = true;
+
     const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
     const apiKey = process.env.NEXT_PUBLIC_API_KEY ?? "";
     const userToken = session?.accessToken ?? "";
@@ -207,9 +221,10 @@ function PipelinePanel() {
     if (userToken) params.set("token", userToken);
     const logsUrl = `${base}/api/pipeline/logs?${params}`;
     const es = new EventSource(logsUrl);
+    es.onopen = () => setReconnecting(false);
     es.onmessage = (e) => {
       const data = JSON.parse(e.data);
-      if (data.line) setLogs((prev) => [...prev.slice(-199), data.line]);
+      if (data.line) setLogs((prev) => [...prev.slice(-499), data.line]);
     };
     return () => es.close();
   }, [status.running]);
@@ -397,15 +412,45 @@ function PipelinePanel() {
       )}
 
       {(status.running || logs.length > 0) && (
-        <div
-          ref={logsRef}
-          className="bg-slate-950 text-green-400 text-xs font-mono rounded-lg p-4 h-40 md:h-48 overflow-y-auto space-y-0.5 mt-4"
-        >
-          {logs.length === 0 ? (
-            <div className="text-slate-500">Waiting for output…</div>
-          ) : (
-            logs.map((l, i) => <div key={i}>{l}</div>)
-          )}
+        <div className="mt-4 flex flex-col gap-0">
+          {/* Terminal header bar */}
+          <div className="flex items-center justify-between bg-slate-800 rounded-t-lg px-3 py-1.5">
+            <div className="flex items-center gap-2">
+              <div className="flex gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-500/60" />
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/60" />
+              </div>
+              <span className="text-[10px] text-slate-400 font-mono ml-1">pipeline.log</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {reconnecting && (
+                <span className="text-[10px] text-amber-400 font-mono">reconnecting…</span>
+              )}
+              {status.running && !reconnecting && (
+                <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  LIVE
+                </span>
+              )}
+              {!status.running && logs.length > 0 && (
+                <span className="text-[10px] text-slate-500 font-mono">{logs.length} lines</span>
+              )}
+            </div>
+          </div>
+          {/* Log body */}
+          <div
+            ref={logsRef}
+            className={`bg-slate-950 text-xs font-mono rounded-b-lg px-4 py-3 overflow-y-auto space-y-0.5 transition-all duration-300 ${
+              status.running ? "h-64 md:h-80" : "h-48"
+            }`}
+          >
+            {logs.length === 0 ? (
+              <div className="text-slate-500 animate-pulse">Waiting for output…</div>
+            ) : (
+              logs.map((l, i) => <LogLine key={i} line={l} />)
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -570,12 +615,6 @@ export default function DashboardPage() {
           label="Total Scanned"
           value={stats?.total_listings ?? 0}
           accent="border-slate-300"
-        />
-        <StatCard
-          label="💬 Queued Messages"
-          value={stats?.messages_queued ?? 0}
-          accent="border-blue-400"
-          href="/messages"
         />
       </div>
 

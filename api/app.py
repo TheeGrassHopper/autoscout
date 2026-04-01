@@ -293,19 +293,15 @@ def get_stats():
         return _stats_cache["data"]
 
     if not _db_exists():
-        result = {"total_listings": 0, "great_deals": 0, "fair_deals": 0,
-                  "poor_deals": 0, "messages_queued": 0, "messages_approved": 0}
+        result = {"total_listings": 0, "great_deals": 0, "fair_deals": 0, "poor_deals": 0}
     else:
         with _db() as conn:
-            total    = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
-            great    = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='great'").fetchone()[0]
-            fair     = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='fair'").fetchone()[0]
-            poor     = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='poor'").fetchone()[0]
-            queued   = conn.execute("SELECT COUNT(*) FROM messages WHERE status='queued'").fetchone()[0]
-            approved = conn.execute("SELECT COUNT(*) FROM messages WHERE status='approved'").fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
+            great = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='great'").fetchone()[0]
+            fair  = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='fair'").fetchone()[0]
+            poor  = conn.execute("SELECT COUNT(*) FROM listings WHERE deal_class='poor'").fetchone()[0]
         result = {
-            "total_listings": total, "great_deals": great, "fair_deals": fair,
-            "poor_deals": poor, "messages_queued": queued, "messages_approved": approved,
+            "total_listings": total, "great_deals": great, "fair_deals": fair, "poor_deals": poor,
         }
 
     _stats_cache["data"] = result
@@ -629,46 +625,6 @@ def _run_carmax_offer_bg(listing_id: str, listing: dict):
 
 
 # ── Messages ──────────────────────────────────────────────────────────────────
-
-@app.get("/api/messages/queue")
-def get_message_queue():
-    if not _db_exists():
-        return []
-
-    with _db() as conn:
-        rows = conn.execute("""
-            SELECT m.id, m.listing_id, m.message_text, m.drafted_at, m.status,
-                   l.title, l.url, l.asking_price, l.kbb_value, l.savings,
-                   l.total_score, l.deal_class, l.make, l.model, l.year, l.mileage, l.location
-            FROM messages m
-            JOIN listings l ON m.listing_id = l.listing_id
-            WHERE m.status = 'queued'
-            ORDER BY l.total_score DESC
-        """).fetchall()
-
-    return _rows(rows)
-
-
-@app.post("/api/messages/{message_id}/approve")
-def approve_message(message_id: int):
-    if not _db_exists():
-        raise HTTPException(404, "No database yet")
-    with _db() as conn:
-        conn.execute(
-            "UPDATE messages SET status='approved', sent_at=? WHERE id=?",
-            (datetime.now().isoformat(), message_id),
-        )
-    return {"status": "approved"}
-
-
-@app.post("/api/messages/{message_id}/skip")
-def skip_message(message_id: int):
-    if not _db_exists():
-        raise HTTPException(404, "No database yet")
-    with _db() as conn:
-        conn.execute("UPDATE messages SET status='skipped' WHERE id=?", (message_id,))
-    return {"status": "skipped"}
-
 
 @app.post("/api/deals/{listing_id}/draft-message")
 def draft_message_for_deal(listing_id: str):

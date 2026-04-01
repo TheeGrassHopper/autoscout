@@ -11,7 +11,6 @@ const baseNav = [
   { href: "/deals",    label: "Deals",     icon: "🔥" },
   { href: "/market",   label: "Market",    icon: "📊" },
   { href: "/searches", label: "Searches",  icon: "🔍" },
-  { href: "/messages", label: "Outreach",  icon: "✉️" },
   { href: "/runs",     label: "Run Logs",  icon: "📋" },
   { href: "/profile",  label: "Profile",   icon: "👤" },
 ];
@@ -115,8 +114,6 @@ export default function Sidebar() {
 
             // Badge for Deals
             const showDealsBadge = href === "/deals" && stats && stats.great_deals > 0;
-            // Badge for Outreach
-            const showOutreachBadge = href === "/messages" && stats && stats.messages_queued > 0;
 
             return (
               <Link
@@ -133,11 +130,6 @@ export default function Sidebar() {
                 {showDealsBadge && (
                   <span className="ml-auto text-[10px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded-full">
                     {stats!.great_deals}
-                  </span>
-                )}
-                {showOutreachBadge && (
-                  <span className="ml-auto text-[10px] font-bold bg-blue-500 text-white px-1.5 py-0.5 rounded-full">
-                    {stats!.messages_queued}
                   </span>
                 )}
               </Link>
@@ -167,7 +159,6 @@ export default function Sidebar() {
           const active = path === href;
 
           const showDealsBadge = href === "/deals" && stats && stats.great_deals > 0;
-          const showOutreachBadge = href === "/messages" && stats && stats.messages_queued > 0;
 
           return (
             <Link
@@ -182,11 +173,6 @@ export default function Sidebar() {
                 {showDealsBadge && (
                   <span className="absolute -top-1 -right-2 text-[9px] font-bold bg-emerald-500 text-white min-w-[14px] h-[14px] flex items-center justify-center rounded-full px-0.5">
                     {stats!.great_deals}
-                  </span>
-                )}
-                {showOutreachBadge && (
-                  <span className="absolute -top-1 -right-2 text-[9px] font-bold bg-blue-500 text-white min-w-[14px] h-[14px] flex items-center justify-center rounded-full px-0.5">
-                    {stats!.messages_queued}
                   </span>
                 )}
               </span>
