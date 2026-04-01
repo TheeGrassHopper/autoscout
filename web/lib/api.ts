@@ -52,6 +52,10 @@ export interface Deal {
   seller_phone: string | null;
   seller_email: string | null;
   suggested_offer: number | null;
+  cylinders: string | null;
+  fuel: string | null;
+  body_type: string | null;
+  transmission: string | null;
   posted_date: string | null;
   first_seen: string;
   last_seen: string;

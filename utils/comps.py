@@ -43,6 +43,28 @@ _PARALLEL_WORKERS = 4         # concurrent Playwright browser instances
 DEFAULT_YEAR_RANGE    = 2        # ±2 years   (was ±1)
 DEFAULT_MILEAGE_RANGE = 15_000   # ±15k miles (was ±10k)
 
+# Common trim/descriptor words that appear in CL titles but aren't part of the
+# base model name — strip these so "Sorento LX" and "Sorento V6" both key as "Sorento"
+_TRIM_NOISE_RE = re.compile(
+    r"\b(lx|ex|se|le|xl|xlt|sr|sr5|trd|pro|limited|sport|premium|base|plus|"
+    r"4wd|awd|fwd|rwd|v6|v8|v4|4cyl|6cyl|8cyl|turbo|diesel|hybrid|"
+    r"1owner|one\s*owner|clean\s*title|loaded|runs\s*great|great\s*deal|"
+    r"low\s*miles|well\s*maintained|new\s*tires|must\s*sell)\b.*",
+    re.IGNORECASE,
+)
+
+
+def _base_model(model: str) -> str:
+    """Strip trim/descriptor noise from a model string for comp pool keying.
+
+    Examples:
+      "Sorento LX"          → "sorento"
+      "Sorento V6 1Owner"   → "sorento"
+      "Tacoma SR5 4WD"      → "tacoma"
+      "Tacoma"              → "tacoma"
+    """
+    return _TRIM_NOISE_RE.sub("", model).strip().lower()
+
 
 # ── Disk cache helpers ────────────────────────────────────────────────────────
 
@@ -91,7 +113,7 @@ class CompsEngine:
         count = 0
         for l in raw_listings:
             if l.make and l.model and l.price:
-                key = (l.make.lower(), l.model.lower())
+                key = (l.make.lower(), _base_model(l.model))
                 if key not in self._cache:
                     self._cache[key] = []
                 self._cache[key].append([l.year, l.mileage, l.price, l.url or ""])
@@ -115,7 +137,7 @@ class CompsEngine:
         for make, model in unique_vehicles:
             cached = _load_cache(make, model)
             if cached is not None:
-                key = (make.lower(), model.lower())
+                key = (make.lower(), _base_model(model))
                 if key not in self._cache:
                     self._cache[key] = []
                 # Support old cache format [year, mileage, price] → pad with ""
@@ -165,7 +187,7 @@ class CompsEngine:
             futures = {pool.submit(fetch_one, pair): pair for pair in needs_fetch}
             for future in as_completed(futures):
                 make, model, comps = future.result()
-                key = (make.lower(), model.lower())
+                key = (make.lower(), _base_model(model))
                 if key not in self._cache:
                     self._cache[key] = []
                 self._cache[key].extend(
@@ -192,7 +214,7 @@ class CompsEngine:
         Falls back progressively if not enough comps pass the strict filter.
         Returns (None, []) when no comps are available.
         """
-        key = (make.lower(), model.lower())
+        key = (make.lower(), _base_model(model))
         pool = self._cache.get(key, [])
         if not pool:
             return None, []

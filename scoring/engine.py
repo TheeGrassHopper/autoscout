@@ -114,6 +114,9 @@ class ScoredListing:
     posted_date: str = ""
     description: str = ""
     image_urls: list = field(default_factory=list)
+    cylinders: str = ""
+    fuel: str = ""
+    body_type: str = ""
 
     # Pricing
     asking_price: Optional[int] = None
@@ -191,6 +194,9 @@ class DealScorer:
             transmission=listing.transmission,
             title_status=listing.title_status,
             vin=listing.vin,
+            cylinders=getattr(listing, "cylinders", ""),
+            fuel=getattr(listing, "fuel", ""),
+            body_type=getattr(listing, "body_type", ""),
             seller_phone=getattr(listing, "seller_phone", ""),
             seller_email=getattr(listing, "seller_email", ""),
             location=listing.location,

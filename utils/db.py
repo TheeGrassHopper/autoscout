@@ -64,7 +64,11 @@ class Database:
                     local_market_comp_urls TEXT,
                     seller_phone        TEXT,
                     seller_email        TEXT,
-                    suggested_offer     INTEGER
+                    suggested_offer     INTEGER,
+                    cylinders           TEXT,
+                    fuel                TEXT,
+                    body_type           TEXT,
+                    transmission        TEXT
                 )
             """)
             conn.execute(f"""
@@ -104,6 +108,10 @@ class Database:
                 ("seller_phone",            "TEXT"),
                 ("seller_email",            "TEXT"),
                 ("suggested_offer",         "INTEGER"),
+                ("cylinders",               "TEXT"),
+                ("fuel",                    "TEXT"),
+                ("body_type",               "TEXT"),
+                ("transmission",            "TEXT"),
             ]:
                 if not column_exists(conn, "listings", col):
                     conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
@@ -141,8 +149,10 @@ class Database:
                      savings, total_score, deal_class, make, model, year, mileage,
                      location, vin, title_status, posted_date, image_urls,
                      carvana_offer, carvana_offer_margin, local_market_comp_urls,
-                     seller_phone, seller_email, suggested_offer, first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     seller_phone, seller_email, suggested_offer,
+                     cylinders, fuel, body_type, transmission,
+                     first_seen, last_seen)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(listing_id) DO UPDATE SET
                     kbb_value=excluded.kbb_value,
                     carvana_value=excluded.carvana_value,
@@ -161,6 +171,10 @@ class Database:
                     seller_phone=excluded.seller_phone,
                     seller_email=excluded.seller_email,
                     suggested_offer=excluded.suggested_offer,
+                    cylinders=excluded.cylinders,
+                    fuel=excluded.fuel,
+                    body_type=excluded.body_type,
+                    transmission=excluded.transmission,
                     last_seen=excluded.last_seen
             """, (
                 scored_listing.listing_id,
@@ -193,6 +207,10 @@ class Database:
                 getattr(scored_listing, "seller_phone", "") or None,
                 getattr(scored_listing, "seller_email", "") or None,
                 getattr(scored_listing, "suggested_offer", None),
+                getattr(scored_listing, "cylinders", "") or None,
+                getattr(scored_listing, "fuel", "") or None,
+                getattr(scored_listing, "body_type", "") or None,
+                getattr(scored_listing, "transmission", "") or None,
                 now, now,
             ))
 

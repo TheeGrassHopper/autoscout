@@ -256,6 +256,9 @@ class RawListing:
     vin: str = ""
     seller_phone: str = ""
     seller_email: str = ""
+    cylinders: str = ""
+    fuel: str = ""
+    body_type: str = ""
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -474,37 +477,86 @@ class CraigslistScraper:
             if desc_el.count():
                 listing.description = desc_el.first.inner_text().strip()[:1200]
 
-            # Attribute table — odometer, title status, condition
-            # CL renders attrs as label/value pairs inside .attrgroup spans.
-            # Format varies: "title status: clean" (single span) or label span
-            # followed by value span. We handle both.
+            # ── .attrgroup parsing ────────────────────────────────────────────
+            # CL listing pages have two div.attrgroup blocks on the right panel:
+            #
+            # Block 1 — vehicle identity (year / make+model):
+            #   <div class="attr important">
+            #     <span class="valu year">2007</span>
+            #     <span class="valu makemodel"><a>kia sorento</a></span>
+            #   </div>
+            #
+            # Block 2 — structured specs (one div.attr per row):
+            #   <div class="attr condition">
+            #     <span class="labl">condition:</span>
+            #     <span class="valu"><a>excellent</a></span>
+            #   </div>
+            #   … (cylinders, fuel, odometer, title status, transmission, type)
             odometer_from_attrs: Optional[int] = None
-            title_status_from_attrs: str = ""
-            attr_spans = page.locator(".attrgroup span, p.attrgroup span").all()
-            for i, row in enumerate(attr_spans):
-                text = row.inner_text().strip()
-                lower = text.lower()
-                if "odometer" in lower or "mileage" in lower:
-                    m = re.search(r"([\d,]+)", text)
-                    if m:
-                        odometer_from_attrs = int(m.group(1).replace(",", ""))
-                elif "title status" in lower:
-                    # Value may be in same span ("title status: clean")
-                    # or in the next sibling span
-                    inline_val = re.sub(r"title status\s*:?\s*", "", lower).strip()
-                    if inline_val:
-                        title_status_from_attrs = inline_val
-                    elif i + 1 < len(attr_spans):
-                        next_text = attr_spans[i + 1].inner_text().strip().lower()
-                        if next_text and ":" not in next_text:
-                            title_status_from_attrs = next_text
-                elif "condition" in lower:
-                    listing.condition = re.sub(r"condition\s*:?\s*", "", lower).strip()
+            cl_identity: str = ""
+            attrs: dict = {}
 
-            # Apply attr-parsed title status — authoritative, don't overwrite with text mining
-            if title_status_from_attrs:
-                listing.title_status = title_status_from_attrs
-                logger.debug(f"  Title status from attrs: {title_status_from_attrs} — {listing.title[:40]}")
+            attrgroups = page.locator(".attrgroup").all()
+            for group in attrgroups:
+                # Block 1 detection: contains span.valu.year
+                year_span = group.locator("span.valu.year")
+                if year_span.count():
+                    yr_text = year_span.first.inner_text().strip()
+                    mm_span = group.locator("span.valu.makemodel")
+                    mm_text = mm_span.first.inner_text().strip().lower() if mm_span.count() else ""
+                    if yr_text and mm_text:
+                        cl_identity = f"{yr_text} {mm_text}"
+                    continue
+
+                # Block 2: pair span.labl (key) with span.valu (value) per div.attr
+                for attr_div in group.locator("div.attr").all():
+                    labl = attr_div.locator("span.labl")
+                    valu = attr_div.locator("span.valu")
+                    if labl.count() and valu.count():
+                        key = labl.first.inner_text().strip().rstrip(":").lower()
+                        val = valu.first.inner_text().strip().lower()
+                        if key and val:
+                            attrs[key] = val
+
+            # Apply all parsed attributes
+            if attrs.get("odometer"):
+                m = re.search(r"[\d,]+", attrs["odometer"])
+                if m:
+                    odometer_from_attrs = int(m.group(0).replace(",", ""))
+            if attrs.get("title status"):
+                listing.title_status = attrs["title status"]
+            if attrs.get("condition"):
+                listing.condition = attrs["condition"]
+            if attrs.get("cylinders"):
+                listing.cylinders = attrs["cylinders"]       # "6 cylinders"
+            if attrs.get("fuel"):
+                listing.fuel = attrs["fuel"]                 # "gas"
+            if attrs.get("transmission"):
+                listing.transmission = attrs["transmission"] # "automatic"
+            if attrs.get("type"):
+                listing.body_type = attrs["type"]            # "suv", "pickup", "sedan"
+
+            if attrs:
+                logger.debug(
+                    f"  Attrs: {' | '.join(f'{k}={v}' for k, v in attrs.items())} "
+                    f"— {listing.title[:40]}"
+                )
+
+            # Block 1 identity → authoritative year/make/model (no trim noise)
+            # e.g. "2007 kia sorento"
+            if cl_identity:
+                parts = cl_identity.split()
+                if len(parts) >= 3 and re.match(r"(19|20)\d{2}$", parts[0]):
+                    listing.year  = int(parts[0])
+                    listing.make  = parts[1].title()
+                    listing.model = " ".join(parts[2:]).title()
+                    logger.debug(
+                        f"  Identity from attrgroup: {listing.year} "
+                        f"{listing.make} {listing.model} — {listing.title[:40]}"
+                    )
+
+            if listing.title_status:
+                logger.debug(f"  Title status: {listing.title_status} — {listing.title[:40]}")
 
             # ── Mileage correction ────────────────────────────────────────────
             # Sellers sometimes type "125" meaning 125k miles. We reconcile:

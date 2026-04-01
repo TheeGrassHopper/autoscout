@@ -913,6 +913,10 @@ function ValuationTab({ deal }: { deal: Deal }) {
           { label: "Title Status", value: deal.title_status ?? "—" },
           { label: "Demand Score", value: deal.demand_score != null ? `${deal.demand_score}/100` : "—" },
           { label: "Deal Score", value: `${deal.total_score}/100` },
+          ...(deal.body_type   ? [{ label: "Body Type",     value: deal.body_type }]   : []),
+          ...(deal.fuel        ? [{ label: "Fuel",          value: deal.fuel }]        : []),
+          ...(deal.cylinders   ? [{ label: "Cylinders",     value: deal.cylinders }]   : []),
+          ...(deal.transmission ? [{ label: "Transmission", value: deal.transmission }] : []),
         ].map(({ label, value }) => (
           <div key={label} className="bg-slate-50 rounded-lg p-2.5">
             <div className="text-slate-400 mb-0.5">{label}</div>
