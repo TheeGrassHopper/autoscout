@@ -25,7 +25,7 @@ from urllib.parse import urlencode
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-_DETAIL_WORKERS = 5  # concurrent detail page fetches
+_DETAIL_WORKERS = 2  # concurrent detail page fetches (Railway thread limit)
 
 logger = logging.getLogger(__name__)
 

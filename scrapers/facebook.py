@@ -36,7 +36,7 @@ from scrapers.craigslist import RawListing, _extract_vin, _extract_phone, _extra
 
 logger = logging.getLogger(__name__)
 
-APIFY_ACTOR_ID = "apify/facebook-marketplace-scraper"
+APIFY_ACTOR_ID = "curious_coder/facebook-marketplace"
 
 # Max actor retries on BLOCKED/failure before giving up
 _MAX_RUN_RETRIES = 2
@@ -255,33 +255,44 @@ def _build_search_urls(
     }]
 
 
+def _cookies_to_header_string(fb_cookies: list) -> str:
+    """Convert JSON cookie array to 'name=value; name=value' header string for curious_coder actor."""
+    if not fb_cookies:
+        return ""
+    if isinstance(fb_cookies, str):
+        return fb_cookies  # already a header string
+    parts = []
+    for c in fb_cookies:
+        name = c.get("name", "")
+        value = c.get("value", "")
+        if name and value:
+            parts.append(f"{name}={value}")
+    return "; ".join(parts)
+
+
 def _build_run_input(search_urls: list[dict], fb_cookies: list) -> dict:
     """
-    Build Apify actor input with anti-blocking settings:
-    - Residential proxy rotation
-    - Concurrency limited to 1 (sequential, human-like)
-    - Increased timeouts and retries
-    - Cookie-based auth
+    Build input for curious_coder/facebook-marketplace actor.
+    - urls: list of FB Marketplace search URLs
+    - getListingDetails: True → returns vehicle-specific fields (VIN, make, model, year, mileage, etc.)
+    - cookies: header-string format for authenticated access
+    - proxy: US residential for best FB compatibility
     """
-    return {
-        "startUrls": search_urls,
-        "maxItems": 100,
-        "cookies": fb_cookies,
-        "sessionCookies": fb_cookies,  # some actor versions use this key
-        # Anti-blocking: proxy rotation
-        "proxyConfiguration": {
+    # curious_coder uses "urls" (list of URL strings), not "startUrls" (list of dicts)
+    url_strings = [u["url"] if isinstance(u, dict) else u for u in search_urls]
+    run_input: dict = {
+        "urls": url_strings,
+        "getListingDetails": True,   # enables vehicle_make, vehicle_year, VIN, mileage, etc.
+        "getAllListingPhotos": False, # skip extra photo fetches to save credits
+        "strictFiltering": True,     # exclude off-location broad-match results
+        "proxy": {
             "useApifyProxy": True,
-            "apifyProxyGroups": ["RESIDENTIAL"],  # best for FB; falls back if unavailable
+            "apifyProxyCountry": "US",
         },
-        # Anti-blocking: slow down to appear human
-        "maxConcurrency": 1,
-        "minConcurrency": 1,
-        # Generous timeouts to allow JS-rendered pages to load
-        "navigationTimeoutSecs": 90,
-        "requestHandlerTimeoutSecs": 120,
-        # Retry on individual request failures within the actor
-        "maxRequestRetries": 3,
     }
+    if fb_cookies:
+        run_input["cookies"] = _cookies_to_header_string(fb_cookies)
+    return run_input
 
 
 def _all_blocked(items: list) -> bool:
@@ -315,7 +326,15 @@ def _parse_items(
     max_mileage: int,
     seen_ids: set[str],
 ) -> list[RawListing]:
-    """Convert raw Apify item dicts into RawListing objects."""
+    """
+    Convert curious_coder/facebook-marketplace output items into RawListing objects.
+
+    curious_coder returns structured vehicle fields when getListingDetails=True:
+      vehicle_make_display_name, vehicle_model_display_name, vehicle_year,
+      vehicle_odometer_data {value, unit}, vehicle_identification_number (VIN),
+      vehicle_transmission_type, vehicle_fuel_type, vehicle_title_status,
+      vehicle_seller_type (PRIVATE_SELLER vs dealer)
+    """
     from scrapers.craigslist import CraigslistScraper
 
     listings = []
@@ -332,44 +351,142 @@ def _parse_items(
         if fb_id in seen_ids:
             continue
 
-        price = _parse_fb_price(item.get("price", ""))
+        # ── Price ────────────────────────────────────────────────────────────
+        price_obj = item.get("listing_price") or {}
+        price = None
+        if isinstance(price_obj, dict):
+            price = _parse_fb_price(str(price_obj.get("amount") or price_obj.get("formatted_amount", "")))
         if not price:
-            logger.debug(f"FB skip (no price): {item.get('title','')[:40]}")
+            price = _parse_fb_price(str(item.get("price", "")))
+        if not price:
+            logger.debug(f"FB skip (no price): {item.get('marketplace_listing_title','')[:40]}")
             continue
 
-        description = (item.get("description", "") or "")[:1200]
-        mileage = _parse_fb_mileage(
-            item.get("mileage", "") or item.get("condition", "") or description
-        )
+        # ── Description ───────────────────────────────────────────────────────
+        desc_obj = item.get("redacted_description") or {}
+        description = (
+            (desc_obj.get("text") if isinstance(desc_obj, dict) else "")
+            or item.get("description", "")
+            or ""
+        )[:1200]
+
+        # ── Mileage (structured first, then parse description) ────────────────
+        odometer = item.get("vehicle_odometer_data") or {}
+        mileage = None
+        if isinstance(odometer, dict) and odometer.get("value"):
+            val = int(odometer["value"])
+            unit = (odometer.get("unit") or "").upper()
+            mileage = val if "MI" in unit else int(val * 1.60934)  # km → miles
+        if not mileage:
+            mileage = _parse_fb_mileage(description)
 
         if mileage and mileage > max_mileage:
             continue
 
-        vin = _extract_vin(description)
-        title_status = _detect_title_status(item.get("title", ""), description)
+        # ── Private seller filter ─────────────────────────────────────────────
+        seller_type = (item.get("vehicle_seller_type") or "").upper()
+        if seller_type and seller_type not in ("PRIVATE_SELLER", "PRIVATE", ""):
+            logger.debug(f"FB skip (dealer): {item.get('marketplace_listing_title','')[:40]}")
+            continue
+
+        # ── VIN ───────────────────────────────────────────────────────────────
+        vin = item.get("vehicle_identification_number") or _extract_vin(description)
+
+        # ── Title status ──────────────────────────────────────────────────────
+        title_status_raw = (item.get("vehicle_title_status") or "").lower()
+        if "clean" in title_status_raw:
+            title_status = "clean"
+        elif "salvage" in title_status_raw:
+            title_status = "salvage"
+        elif "rebuilt" in title_status_raw:
+            title_status = "rebuilt"
+        else:
+            title_status = _detect_title_status(
+                item.get("marketplace_listing_title", ""), description
+            )
+
+        # ── Location ──────────────────────────────────────────────────────────
+        loc_obj = item.get("location") or {}
+        geo = (loc_obj.get("reverse_geocode") or {}) if isinstance(loc_obj, dict) else {}
+        listing_location = (
+            ", ".join(filter(None, [geo.get("city"), geo.get("state")]))
+            or item.get("location_text", "")
+            or location
+        )
+
+        # ── Photos ───────────────────────────────────────────────────────────
+        photo_url = item.get("primary_listing_photo_url", "")
+        photos = item.get("listing_photos") or []
+        if isinstance(photos, list):
+            image_urls = [p.get("image", {}).get("uri", "") for p in photos if isinstance(p, dict)]
+            image_urls = [u for u in image_urls if u]
+        else:
+            image_urls = [photo_url] if photo_url else []
+
+        # ── Title ────────────────────────────────────────────────────────────
+        title = (
+            item.get("marketplace_listing_title")
+            or item.get("custom_title")
+            or ""
+        ).strip()
+
+        # ── Make / Model / Year — structured fields take priority ─────────────
+        make  = (item.get("vehicle_make_display_name")  or "").strip().title()
+        model = (item.get("vehicle_model_display_name") or "").strip().title()
+        trim  = (item.get("vehicle_trim_display_name")  or "").strip()
+        if trim:
+            model = f"{model} {trim}".strip()
+        year_val = item.get("vehicle_year")
+        year = int(year_val) if year_val else None
+
+        # ── Contact info ─────────────────────────────────────────────────────
         seller_phone = _extract_phone(description)
         seller_email = _extract_email(description)
+
+        # ── Transmission / Fuel ───────────────────────────────────────────────
+        transmission = (item.get("vehicle_transmission_type") or "").lower() or None
+        fuel = (item.get("vehicle_fuel_type") or "").lower() or None
+
+        # ── Posted date ───────────────────────────────────────────────────────
+        creation_time = item.get("creation_time")
+        posted_date = ""
+        if creation_time:
+            try:
+                from datetime import datetime, timezone
+                posted_date = datetime.fromtimestamp(int(creation_time), tz=timezone.utc).isoformat()
+            except Exception:
+                pass
 
         listing = RawListing(
             listing_id=fb_id,
             source="facebook",
             url=item.get("url") or f"https://www.facebook.com/marketplace/item/{listing_id}",
-            title=(item.get("title", "") or "").strip(),
+            title=title,
             price=price,
-            location=item.get("location", location),
-            posted_date=item.get("postedAt", "") or item.get("listed_at", ""),
+            location=listing_location,
+            posted_date=posted_date,
             description=description,
-            image_urls=item.get("images") or [],
+            image_urls=image_urls,
             mileage=mileage,
+            year=year,
+            make=make,
+            model=model,
             vin=vin,
             title_status=title_status,
             seller_phone=seller_phone,
             seller_email=seller_email,
         )
 
-        # Parse make/model/year from title
-        dummy = CraigslistScraper.__new__(CraigslistScraper)
-        dummy._parse_title_fields(listing, listing.title)
+        # Store transmission/fuel if RawListing supports it
+        if hasattr(listing, "transmission") and transmission:
+            listing.transmission = transmission
+        if hasattr(listing, "fuel") and fuel:
+            listing.fuel = fuel
+
+        # Fall back to title parsing only if make/model not populated
+        if not make or not model:
+            dummy = CraigslistScraper.__new__(CraigslistScraper)
+            dummy._parse_title_fields(listing, listing.title)
 
         listings.append(listing)
         seen_ids.add(fb_id)
