@@ -154,10 +154,10 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
         if l.listing_id not in seen_ids:
             seen_ids.add(l.listing_id)
             all_raw.append(l)
+    # FB listings were already deduplicated inside scrape_facebook() via seen_ids,
+    # so they won't be in seen_ids yet — but fb_ prefix guarantees no CL collision anyway.
     for l in fb_listings:
-        if l.listing_id not in seen_ids:
-            seen_ids.add(l.listing_id)
-            all_raw.append(l)
+        all_raw.append(l)
 
     if not all_raw:
         logger.warning("No listings found. Check your filters or try a broader search.")
