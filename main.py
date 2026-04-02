@@ -515,9 +515,16 @@ def export_csv(listings: list[ScoredListing]):
 
 def parse_args():
     p = argparse.ArgumentParser(description="AutoScout AI — Vehicle Deal Hunter")
-    p.add_argument("--query", default="", help="Vehicle search query (e.g. 'tacoma')")
-    p.add_argument("--dry-run", action="store_true", help="Score deals but don't queue messages")
-    p.add_argument("--schedule", action="store_true", help="Run on a schedule (uses config frequency)")
+    p.add_argument("--query",        default="",  help="Vehicle search query (e.g. 'tacoma')")
+    p.add_argument("--dry-run",      action="store_true", help="Score deals but don't queue messages")
+    p.add_argument("--schedule",     action="store_true", help="Run on a schedule (uses config frequency)")
+    p.add_argument("--zip-code",     default="",  help="Search center ZIP code")
+    p.add_argument("--radius-miles", type=int, default=0, help="Search radius in miles")
+    p.add_argument("--no-facebook",  action="store_true", help="Skip Facebook Marketplace scraping")
+    p.add_argument("--min-year",     type=int, default=0, help="Minimum vehicle year")
+    p.add_argument("--max-year",     type=int, default=0, help="Maximum vehicle year")
+    p.add_argument("--max-price",    type=int, default=0, help="Maximum asking price")
+    p.add_argument("--max-mileage",  type=int, default=0, help="Maximum mileage")
     return p.parse_args()
 
 
@@ -540,7 +547,17 @@ def main():
             sched.run_pending()
             time.sleep(60)
     else:
-        asyncio.run(run_pipeline(query=args.query, dry_run=args.dry_run))
+        asyncio.run(run_pipeline(
+            query=args.query,
+            dry_run=args.dry_run,
+            zip_code=args.zip_code or None,
+            radius_miles=args.radius_miles or None,
+            include_facebook=not args.no_facebook,
+            min_year=args.min_year or None,
+            max_year=args.max_year or None,
+            max_price=args.max_price or None,
+            max_mileage=args.max_mileage or None,
+        ))
 
 
 if __name__ == "__main__":

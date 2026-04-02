@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
 from contextlib import contextmanager
@@ -809,6 +810,10 @@ def stop_pipeline(request: Request):
     if not p["running"]:
         raise HTTPException(409, "Pipeline is not running")
     p["stop_requested"] = True
+    # Terminate the subprocess directly so it stops immediately
+    proc = p.get("_proc")
+    if proc and proc.poll() is None:
+        proc.terminate()
     return {"status": "stop_requested"}
 
 
@@ -890,35 +895,73 @@ def _run_pipeline_bg(pipeline_key: str, query: str = "", dry_run: bool = True,
                      max_price: int = 0, max_mileage: int = 0):
     p = _get_pipeline(pipeline_key)
     p["log_lines"] = []   # reset for this run
-    handler = _QueueLogHandler(p["logs"], p["log_lines"])
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s — %(message)s", "%H:%M:%S"))
-    root = logging.getLogger()
-    root.addHandler(handler)
 
     started_at = p["start_time"] or datetime.now().isoformat()
     run_status = "completed"
     listing_count = 0
 
+    # Build CLI args for main.py subprocess
+    project_root = str(Path(__file__).parent.parent)
+    cmd = [sys.executable, "-u", "main.py"]  # -u = unbuffered stdout
+    if query:
+        cmd += ["--query", query]
+    if dry_run:
+        cmd += ["--dry-run"]
+    if zip_code:
+        cmd += ["--zip-code", zip_code]
+    if radius_miles:
+        cmd += ["--radius-miles", str(radius_miles)]
+    if not include_facebook:
+        cmd += ["--no-facebook"]
+    if min_year:
+        cmd += ["--min-year", str(min_year)]
+    if max_year:
+        cmd += ["--max-year", str(max_year)]
+    if max_price:
+        cmd += ["--max-price", str(max_price)]
+    if max_mileage:
+        cmd += ["--max-mileage", str(max_mileage)]
+
     try:
-        import asyncio
-        from main import run_pipeline
-        results = asyncio.run(run_pipeline(
-            query=query, dry_run=dry_run,
-            zip_code=zip_code or None, radius_miles=radius_miles or None,
-            stop_check=lambda: p["stop_requested"],
-            include_facebook=include_facebook,
-            min_year=min_year or None, max_year=max_year or None,
-            max_price=max_price or None, max_mileage=max_mileage or None,
-        ))
-        listing_count = len(results)
-        p["last_count"] = listing_count
-        if p["stop_requested"]:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        p["_proc"] = proc  # store so stop endpoint can terminate it
+
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            p["logs"].put(line)
+            p["log_lines"].append(line)
+            # Parse listing count from summary line written by main.py
+            if "listings processed" in line or "Pipeline complete" in line:
+                import re as _re
+                m = _re.search(r"(\d+)\s+listings", line)
+                if m:
+                    listing_count = int(m.group(1))
+
+        proc.wait()
+        p.pop("_proc", None)
+
+        if p["stop_requested"] or proc.returncode == -15:  # SIGTERM
             run_status = "stopped"
             msg = f"⛔ Pipeline stopped — {listing_count} listings processed"
+        elif proc.returncode != 0:
+            run_status = "error"
+            msg = f"❌ Pipeline error (exit {proc.returncode})"
         else:
             msg = f"✅ Pipeline complete — {listing_count} listings processed"
+
         p["logs"].put(msg)
         p["log_lines"].append(msg)
+        p["last_count"] = listing_count
+
     except Exception as e:
         run_status = "error"
         msg = f"❌ Pipeline error: {e}"
@@ -926,7 +969,7 @@ def _run_pipeline_bg(pipeline_key: str, query: str = "", dry_run: bool = True,
         p["log_lines"].append(msg)
         logging.exception("Pipeline background task failed")
     finally:
-        root.removeHandler(handler)
+        p.pop("_proc", None)
         finished_at = datetime.now().isoformat()
         elapsed = int((datetime.fromisoformat(finished_at) - datetime.fromisoformat(started_at)).total_seconds())
 
