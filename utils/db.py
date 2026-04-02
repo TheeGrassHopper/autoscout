@@ -351,6 +351,24 @@ class Database:
             rows = conn.execute("SELECT listing_id FROM listings").fetchall()
         return {r[0] for r in rows}
 
+    def get_existing_listing_prices(self) -> dict[str, Optional[int]]:
+        """Return {listing_id: asking_price} for all listings in DB."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT listing_id, asking_price FROM listings").fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def touch_last_seen(self, listing_ids: list[str]):
+        """Bulk-update last_seen timestamp for already-scored listings."""
+        if not listing_ids:
+            return
+        now = datetime.now().isoformat()
+        placeholders = ",".join("?" * len(listing_ids))
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE listings SET last_seen=? WHERE listing_id IN ({placeholders})",
+                [now] + listing_ids,
+            )
+
     def purge_expired_price_cache(self):
         """Delete expired cache rows — call occasionally to keep DB size down."""
         with self._connect() as conn:

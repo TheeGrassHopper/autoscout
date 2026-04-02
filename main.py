@@ -200,6 +200,40 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     }
     await asyncio.to_thread(comps_engine.fetch_all_comps, unique_vehicles)
 
+    # ── Step 1.9: Skip already-scored listings (TICKET-006) ──────────────────
+    db = Database(db_path=OUTPUT["db_path"])
+    existing_prices = db.get_existing_listing_prices()
+
+    new_listings   = []
+    known_listings = []
+    for raw in all_raw:
+        stored_price = existing_prices.get(raw.listing_id)
+        if stored_price is None:
+            # Never seen before
+            new_listings.append(raw)
+        else:
+            # Re-score if asking price dropped/changed by more than 5%
+            current = raw.asking_price or 0
+            if stored_price and current and abs(current - stored_price) / stored_price > 0.05:
+                new_listings.append(raw)
+                logger.debug(
+                    f"  Re-scoring {raw.listing_id[:12]}… (price changed "
+                    f"${stored_price:,} → ${current:,})"
+                )
+            else:
+                known_listings.append(raw)
+
+    logger.info(
+        f"STEP 1.9 — Skip check: {len(new_listings)} new / "
+        f"{len(known_listings)} already scored (skipping pricing)"
+    )
+    db.touch_last_seen([l.listing_id for l in known_listings])
+    all_raw = new_listings
+
+    if not all_raw:
+        logger.info("No new listings to price — pipeline complete (all known).")
+        return []
+
     # ── Step 2: Price lookups ─────────────────────────────────────────────────
     logger.info("STEP 2 — Fetching market values (Carvana + Local Market + KBB)")
 
@@ -221,7 +255,6 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     logger.info("STEP 3 — Scoring listings (parallel price lookups)")
 
     scorer = DealScorer(config={**SCORING, **MESSAGING})
-    db = Database(db_path=OUTPUT["db_path"])
 
     def _fetch_prices(raw):
         """
@@ -363,7 +396,7 @@ async def run_pipeline(query: str = "", dry_run: bool = False, zip_code: str = N
     _PRICE_WORKERS = 8
     price_results: dict = {}
 
-    logger.info(f"  Fetching prices for {len(all_raw)} listings ({_PRICE_WORKERS} parallel workers)…")
+    logger.info(f"  Fetching prices for {len(all_raw)} new listings ({_PRICE_WORKERS} parallel workers)…")
     with ThreadPoolExecutor(max_workers=_PRICE_WORKERS) as pool:
         future_map = {pool.submit(_fetch_prices, raw): raw for raw in all_raw}
         for future in as_completed(future_map):
