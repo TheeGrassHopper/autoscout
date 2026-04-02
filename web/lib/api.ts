@@ -85,6 +85,10 @@ export async function stopPipeline(): Promise<void> {
   await authedFetch(`${BASE}/api/pipeline/stop`, { method: "POST" });
 }
 
+export async function resetPipeline(): Promise<void> {
+  await authedFetch(`${BASE}/api/pipeline/reset`, { method: "POST" });
+}
+
 export async function getStats(): Promise<Stats> {
   const res = await fetch(`${BASE}/api/stats`, { cache: "no-store", headers: authHeaders() });
   return res.json();

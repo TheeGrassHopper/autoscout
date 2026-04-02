@@ -11,6 +11,7 @@ import {
   getPipelineStatus,
   getStats,
   resetDatabase,
+  resetPipeline,
   runPipeline,
   stopPipeline,
 } from "@/lib/api";
@@ -201,6 +202,7 @@ function PipelinePanel() {
   const [logs, setLogs] = useState<string[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  const [liveCount, setLiveCount] = useState(0);
   const logsRef = useRef<HTMLDivElement>(null);
   const prevRunning = useRef(false);
 
@@ -234,7 +236,12 @@ function PipelinePanel() {
     es.onopen = () => setReconnecting(false);
     es.onmessage = (e) => {
       const data = JSON.parse(e.data);
-      if (data.line) setLogs((prev) => [...prev.slice(-499), data.line]);
+      if (data.line) {
+        setLogs((prev) => [...prev.slice(-499), data.line]);
+        // Parse "[ X/Y ]" scoring lines to update live count
+        const m = data.line.match(/\[\s*(\d+)\s*\/\s*\d+\s*\]/);
+        if (m) setLiveCount(parseInt(m[1]));
+      }
     };
     return () => es.close();
   }, [status.running]);
@@ -246,6 +253,7 @@ function PipelinePanel() {
   const start = async () => {
     setLogs([]);
     setRunError(null);
+    setLiveCount(0);
     const filters: RunFilters = {
       minYear:    parseInt(minYear)    || undefined,
       maxYear:    parseInt(maxYear)    || undefined,
@@ -256,8 +264,16 @@ function PipelinePanel() {
       await runPipeline(query, dryRun, zipCode, parseInt(radius) || 0, includeFb, filters);
       setStatus((s) => ({ ...s, running: true }));
     } catch (err: unknown) {
-      setRunError(err instanceof Error ? err.message : "Failed to start pipeline");
+      const msg = err instanceof Error ? err.message : "Failed to start pipeline";
+      setRunError(msg);
     }
+  };
+
+  const handleReset = async () => {
+    await resetPipeline();
+    setStatus((s) => ({ ...s, running: false, stop_requested: false }));
+    setRunError(null);
+    setLiveCount(0);
   };
 
   const clearDb = async () => {
@@ -397,12 +413,28 @@ function PipelinePanel() {
             </button>
           )}
           {status.running && (
+            <>
+              {liveCount > 0 && (
+                <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-mono rounded-lg border border-blue-200">
+                  {liveCount} scored
+                </span>
+              )}
+              <button
+                onClick={stopPipeline}
+                disabled={status.stop_requested}
+                className="px-4 py-2.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-40 transition-colors"
+              >
+                {status.stop_requested ? "Stopping…" : "⏹ Stop"}
+              </button>
+            </>
+          )}
+          {!status.running && runError?.includes("already running") && (
             <button
-              onClick={stopPipeline}
-              disabled={status.stop_requested}
-              className="px-4 py-2.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-40 transition-colors"
+              onClick={handleReset}
+              className="px-3 py-2.5 bg-amber-50 text-amber-700 text-xs font-medium rounded-lg hover:bg-amber-100 transition-colors border border-amber-200"
+              title="Force-clear stuck pipeline state"
             >
-              {status.stop_requested ? "Stopping…" : "⏹ Stop"}
+              ↺ Reset
             </button>
           )}
           <button

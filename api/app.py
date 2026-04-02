@@ -825,6 +825,20 @@ def stop_pipeline(request: Request):
     return {"status": "stop_requested"}
 
 
+@app.post("/api/pipeline/reset")
+def reset_pipeline(request: Request):
+    """Force-clear a stuck pipeline state (e.g. after a crash or server restart)."""
+    p = _get_pipeline(_get_pipeline_key(request))
+    proc = p.get("_proc")
+    if proc and proc.poll() is None:
+        proc.terminate()
+    p["running"] = False
+    p["start_time"] = None
+    p["stop_requested"] = False
+    p.pop("_proc", None)
+    return {"status": "reset"}
+
+
 # ── Run History ───────────────────────────────────────────────────────────────
 
 @app.get("/api/runs")
@@ -879,7 +893,15 @@ def run_pipeline_endpoint(
     key = _get_pipeline_key(request)
     p = _get_pipeline(key)
     if p["running"]:
-        raise HTTPException(409, "Your pipeline is already running")
+        # Self-heal: if the subprocess already exited, clear the stuck flag
+        proc = p.get("_proc")
+        if proc is not None and proc.poll() is not None:
+            # Process is dead — clean up silently
+            p["running"] = False
+            p["start_time"] = None
+            p.pop("_proc", None)
+        else:
+            raise HTTPException(409, "Your pipeline is already running")
     # Set running=True immediately to prevent race condition
     p["running"] = True
     p["last_run"] = datetime.now().isoformat()
