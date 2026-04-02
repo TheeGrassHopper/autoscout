@@ -117,6 +117,14 @@ app.include_router(admin_router.router)
 DB_PATH = OUTPUT.get("db_path", "output/autoscout.db")
 FAV_DB_PATH = "output/favorites.db"
 
+# ── Initialize DB schema on startup so API never crashes with "no such table" ─
+try:
+    from utils.db import Database as _Database
+    _Database(db_path=DB_PATH)
+    logger.info("Database schema initialized")
+except Exception as _e:
+    logger.warning(f"DB init on startup failed (non-fatal): {_e}")
+
 # ── Carvana offer job state ───────────────────────────────────────────────────
 # listing_id -> {"status": "running"|"completed"|"error", "offer": str|None, ...}
 _offer_jobs: dict = {}

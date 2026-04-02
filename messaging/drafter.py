@@ -60,14 +60,19 @@ class MessageDrafter:
         elif listing.savings_vs_kbb and listing.savings_vs_kbb < 0:
             savings_str = f"The asking price is ${abs(listing.savings_vs_kbb):,} above KBB market value."
 
+        ask_str     = f"${listing.asking_price:,}"   if listing.asking_price  else "unknown"
+        kbb_str     = f"~${listing.kbb_value:,}"     if listing.kbb_value     else "unknown"
+        mileage_str = f"{listing.mileage:,} miles"   if listing.mileage       else "unknown"
+        offer_str   = f"${listing.suggested_offer:,}" if listing.suggested_offer else "flexible"
+
         prompt = f"""You are helping a car buyer send a message to a private seller on Craigslist or Facebook Marketplace.
 
 Vehicle details:
 - Vehicle: {listing.year} {listing.make} {listing.model}
-- Asking price: ${listing.asking_price:,}
-- KBB market value: ~${listing.kbb_value:,}
-- Mileage: {listing.mileage:,} miles
-- Suggested offer: ${listing.suggested_offer:,}
+- Asking price: {ask_str}
+- KBB market value: {kbb_str}
+- Mileage: {mileage_str}
+- Suggested offer: {offer_str}
 - Deal score: {listing.total_score}/100
 - {savings_str}
 

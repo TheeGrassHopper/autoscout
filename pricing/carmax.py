@@ -55,7 +55,7 @@ def get_carmax_price(
 
     try:
         time.sleep(1.0)
-        resp = requests.get(url, headers=HEADERS, timeout=12)
+        resp = requests.get(url, headers=HEADERS, timeout=12, allow_redirects=True)
         if resp.status_code != 200:
             logger.debug(f"CarMax returned {resp.status_code} for {year} {make} {model}")
             return None
@@ -91,5 +91,10 @@ def get_carmax_price(
         return result
 
     except Exception as e:
-        logger.warning(f"CarMax fetch error for {year} {make} {model}: {e}")
+        # Connection refused / network errors are common on Railway — log at debug only
+        err_str = str(e).lower()
+        if any(x in err_str for x in ("connection refused", "connection reset", "name or service not known")):
+            logger.debug(f"CarMax unavailable for {year} {make} {model}: {e}")
+        else:
+            logger.warning(f"CarMax fetch error for {year} {make} {model}: {e}")
         return None
