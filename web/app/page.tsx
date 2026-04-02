@@ -179,15 +179,25 @@ function PipelinePanel() {
     elapsed_seconds: null,
     stop_requested: false,
   });
+  function lsGet(key: string, fallback: string) {
+    if (typeof window === "undefined") return fallback;
+    return localStorage.getItem(key) ?? fallback;
+  }
+  function usePersisted(key: string, fallback: string) {
+    const [val, setVal] = useState(() => lsGet(key, fallback));
+    const set = (v: string) => { setVal(v); localStorage.setItem(key, v); };
+    return [val, set] as const;
+  }
+
   const [query, setQuery] = useState("");
-  const [zipCode, setZipCode] = useState("85288");
-  const [radius, setRadius] = useState("100");
+  const [zipCode, setZipCode] = usePersisted("as_zipCode", "85288");
+  const [radius, setRadius]   = usePersisted("as_radius", "100");
   const [dryRun, setDryRun] = useState(true);
   const [includeFb, setIncludeFb] = useState(true);
-  const [minYear, setMinYear] = useState("2009");
-  const [maxYear, setMaxYear] = useState("2025");
-  const [maxPrice, setMaxPrice] = useState("40000");
-  const [maxMileage, setMaxMileage] = useState("190000");
+  const [minYear, setMinYear]     = usePersisted("as_minYear", "2009");
+  const [maxYear, setMaxYear]     = usePersisted("as_maxYear", "2025");
+  const [maxPrice, setMaxPrice]   = usePersisted("as_maxPrice", "40000");
+  const [maxMileage, setMaxMileage] = usePersisted("as_maxMileage", "190000");
   const [logs, setLogs] = useState<string[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
